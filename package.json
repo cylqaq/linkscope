@@ -1,0 +1,23 @@
+{
+  "name": "linkscope",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "db:push": "pnpm --filter @linkscope/api db:push",
+    "db:migrate": "pnpm --filter @linkscope/api db:migrate",
+    "db:studio": "pnpm --filter @linkscope/api db:studio"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.3",
+    "typescript": "^5.8.3"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}

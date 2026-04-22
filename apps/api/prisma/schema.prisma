@@ -1,0 +1,118 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Task {
+  id             String     @id @default(cuid())
+  name           String?
+  status         String     @default("queued") // queued|running|partial_done|completed|failed
+  totalUrls      Int        @default(0)
+  completedUrls  Int        @default(0)
+  accessibleCount Int       @default(0)
+  deadLinkCount  Int        @default(0)
+  reviewCount    Int        @default(0)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  completedAt    DateTime?
+
+  taskUrls TaskUrl[]
+
+  @@map("tasks")
+}
+
+model TaskUrl {
+  id            String   @id @default(cuid())
+  taskId        String
+  task          Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  originalUrl   String
+  normalizedUrl String
+  domain        String
+  platform      String   @default("generic")
+  dedupeKey     String
+
+  status        String   @default("pending") // pending|probing|completed|failed
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  completedAt   DateTime?
+
+  httpProbe      HttpProbe?
+  browserProbe   BrowserProbe?
+  classification Classification?
+  aiJudgement    AiJudgement?
+
+  @@index([taskId])
+  @@index([status])
+  @@index([platform])
+  @@map("task_urls")
+}
+
+model HttpProbe {
+  id             String   @id @default(cuid())
+  taskUrlId      String   @unique
+  taskUrl        TaskUrl  @relation(fields: [taskUrlId], references: [id], onDelete: Cascade)
+  statusCode     Int?
+  finalUrl       String
+  redirectChain  Json     @default("[]")
+  latencyMs      Int
+  errorCode      String?
+  headFailed     Boolean  @default(false)
+  rawHeaders     Json?
+  probeAt        DateTime @default(now())
+
+  @@map("probes_http")
+}
+
+model BrowserProbe {
+  id             String   @id @default(cuid())
+  taskUrlId      String   @unique
+  taskUrl        TaskUrl  @relation(fields: [taskUrlId], references: [id], onDelete: Cascade)
+  pageTitle      String?
+  pageText       String?
+  finalUrl       String?
+  screenshotPath String?
+  domSignals     Json     @default("[]")
+  errorCode      String?
+  probeAt        DateTime @default(now())
+
+  @@map("probes_browser")
+}
+
+model Classification {
+  id             String   @id @default(cuid())
+  taskUrlId      String   @unique
+  taskUrl        TaskUrl  @relation(fields: [taskUrlId], references: [id], onDelete: Cascade)
+  finalStatus    String   // accessible|dead_link|review_required
+  internalStatus String
+  reasonCode     String
+  confidence     Float
+  sourceOfTruth  String   // rule_only|rule_plus_ai|adapter|local_agent
+  retryStrategy  String
+  needsReview    Boolean  @default(false)
+  evidence       Json
+  ruleVersion    String   @default("1.0.0")
+  classifiedAt   DateTime @default(now())
+
+  @@map("classifications")
+}
+
+model AiJudgement {
+  id            String   @id @default(cuid())
+  taskUrlId     String   @unique
+  taskUrl       TaskUrl  @relation(fields: [taskUrlId], references: [id], onDelete: Cascade)
+  modelName     String
+  promptVersion String
+  inputSummary  Json
+  decision      String
+  reasoning     String
+  confidence    Float
+  latencyMs     Int
+  tokenUsage    Json?
+  judgedAt      DateTime @default(now())
+
+  @@map("ai_judgements")
+}
