@@ -63,3 +63,11 @@ pnpm dev
 - `docs/DEPLOYMENT.md`: installation, startup, troubleshooting
 - `docs/HANDOFF.md`: iteration guide for new chats and new team members
 - `docs/SECURITY_OPS.md`: security, audit, quality, and observability baseline
+
+## Git branching (CI/CD)
+
+- `main`: production releases
+- `stg`: staging releases
+- `develop`: integration / dev releases
+
+Jenkins multibranch job reads `Jenkinsfile` + `jenkins.properties` and deploys via `docker-compose.prod.yml`.
