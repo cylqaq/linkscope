@@ -25,6 +25,10 @@ const REASON_LABEL: Record<string, string> = {
   timeout: '连接超时',
   dns_failed: 'DNS解析失败',
   ssl_error: 'SSL证书错误',
+  connection_refused: '服务器拒绝连接',
+  connection_reset: '连接被重置',
+  connection_closed: '连接被关闭',
+  unreachable: '主机不可达',
   blocked_by_waf: '被防火墙拦截',
   redirect_to_home: '重定向到首页(疑似失效)',
   redirect_to_error: '重定向到错误页',
@@ -50,7 +54,13 @@ export class ExportService {
       where: { taskId },
       include: {
         classification: {
-          select: { finalStatus: true, reasonCode: true, confidence: true, sourceOfTruth: true },
+          select: {
+            finalStatus: true,
+            reasonCode: true,
+            confidence: true,
+            sourceOfTruth: true,
+            evidence: true,
+          },
         },
         httpProbe: { select: { statusCode: true, finalUrl: true, latencyMs: true } },
       },
@@ -58,9 +68,29 @@ export class ExportService {
     })
   }
 
+  private displayFinalUrl(r: any): string {
+    const ev = r.classification?.evidence
+    if (ev && typeof ev === 'object' && typeof ev.finalUrl === 'string' && ev.finalUrl.length > 0) {
+      return ev.finalUrl
+    }
+    return r.httpProbe?.finalUrl ?? '-'
+  }
+
+  private displayVerifiedBy(r: any): string {
+    const ev = r.classification?.evidence
+    const v = ev && typeof ev === 'object' ? ev.verifiedBy : null
+    const map: Record<string, string> = {
+      http: '直连校验',
+      browser: '浏览器渲染校验',
+      ai: 'AI 复核',
+      rule: '规则判定',
+    }
+    return v ? map[v] ?? v : '-'
+  }
+
   private toCsv(rows: any[], taskId: string) {
     const headers = [
-      '序号', '原始URL', '结果', '原因', '置信度', 'HTTP状态码', '最终URL', '响应时间(ms)', '判定来源',
+      '序号', '原始URL', '结果', '原因', '置信度', 'HTTP状态码', '最终URL', '校验方式', '响应时间(ms)', '判定来源',
     ]
     const lines = [headers.join(',')]
 
@@ -70,12 +100,13 @@ export class ExportService {
       const h = r.httpProbe
       const cells = [
         i + 1,
-        '"' + r.originalUrl + '"',
+        '"' + r.originalUrl.replace(/"/g, '""') + '"',
         STATUS_LABEL[c?.finalStatus] ?? c?.finalStatus ?? '-',
         REASON_LABEL[c?.reasonCode] ?? c?.reasonCode ?? '-',
         c ? Math.round(c.confidence * 100) + '%' : '-',
         h?.statusCode ?? '-',
-        '"' + (h?.finalUrl ?? '-') + '"',
+        '"' + this.displayFinalUrl(r).replace(/"/g, '""') + '"',
+        this.displayVerifiedBy(r),
         h?.latencyMs ?? '-',
         c?.sourceOfTruth ?? '-',
       ]
@@ -101,6 +132,7 @@ export class ExportService {
       { header: '置信度', key: 'confidence', width: 8 },
       { header: 'HTTP状态码', key: 'statusCode', width: 12 },
       { header: '最终URL', key: 'finalUrl', width: 50 },
+      { header: '校验方式', key: 'verifiedBy', width: 18 },
       { header: '响应时间(ms)', key: 'latency', width: 14 },
       { header: '判定来源', key: 'source', width: 14 },
     ]
@@ -119,7 +151,8 @@ export class ExportService {
         reason: REASON_LABEL[c?.reasonCode] ?? c?.reasonCode ?? '-',
         confidence: c ? Math.round(c.confidence * 100) + '%' : '-',
         statusCode: h?.statusCode ?? '-',
-        finalUrl: h?.finalUrl ?? '-',
+        finalUrl: this.displayFinalUrl(r),
+        verifiedBy: this.displayVerifiedBy(r),
         latency: h?.latencyMs ?? '-',
         source: c?.sourceOfTruth ?? '-',
       })

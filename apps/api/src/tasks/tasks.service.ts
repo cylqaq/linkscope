@@ -129,7 +129,15 @@ export class TasksService {
         take: pageSize,
         include: {
           httpProbe: true,
-          browserProbe: { select: { pageTitle: true, finalUrl: true, screenshotPath: true, errorCode: true } },
+          browserProbe: {
+            select: {
+              pageTitle: true,
+              finalUrl: true,
+              screenshotPath: true,
+              errorCode: true,
+              domSignals: true,
+            },
+          },
           classification: true,
           aiJudgement: { select: { decision: true, confidence: true, reasoning: true, modelName: true } },
         },

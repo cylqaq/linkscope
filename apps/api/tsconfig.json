@@ -1,26 +1,13 @@
 {
-    "compilerOptions":  {
-                            "experimentalDecorators":  true,
-                            "paths":  {
-                                          "@linkscope/shared":  [
-                                                                    "../../packages/shared/src/index.ts"
-                                                                ]
-                                      },
-                            "outDir":  "dist",
-                            "lib":  [
-                                        "ES2022",
-                                        "dom"
-                                    ],
-                            "module":  "commonjs",
-                            "emitDecoratorMetadata":  true
-                        },
-    "include":  [
-                    "src",
-                    "../../packages/shared/src"
-                ],
-    "exclude":  [
-                    "node_modules",
-                    "dist"
-                ],
-    "extends":  "../../tsconfig.base.json"
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "module": "commonjs",
+    "lib": ["ES2022", "dom"],
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
 }

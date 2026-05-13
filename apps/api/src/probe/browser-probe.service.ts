@@ -1,11 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common'
 import type { BrowserProbeResult, DomSignal } from '@linkscope/shared'
+import { createHash } from 'crypto'
 import * as path from 'path'
 import * as fs from 'fs'
 
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || './screenshots'
 const PAGE_TIMEOUT = 20000
 const WAIT_FOR = 3000
+
+export interface BrowserProbeOptions {
+  /** AI 工具调用等场景跳过截图以降延迟 */
+  skipScreenshot?: boolean
+}
 
 // Common soft-404 / removed text patterns (Chinese + English)
 const DEAD_TEXT_PATTERNS = [
@@ -31,7 +37,15 @@ export class BrowserProbeService {
   private readonly logger = new Logger(BrowserProbeService.name)
   private playwright: any = null
 
-  async probe(url: string, taskUrlId: string): Promise<BrowserProbeResult> {
+  /**
+   * 供 AI 在无截图模式下拉取渲染后文本，避免 axios 在抖音等站拿到的假 404/空壳。
+   */
+  async lightFetchForAi(url: string): Promise<BrowserProbeResult> {
+    const id = 'ai-' + createHash('sha256').update(url).digest('hex').slice(0, 20)
+    return this.probe(url, id, { skipScreenshot: true })
+  }
+
+  async probe(url: string, taskUrlId: string, opts?: BrowserProbeOptions): Promise<BrowserProbeResult> {
     let browser: any = null
     let page: any = null
 
@@ -74,8 +88,15 @@ export class BrowserProbeService {
 
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT })
 
-      // Wait a bit for JS-rendered content
-      await page.waitForTimeout(WAIT_FOR)
+      const isDouyinFlow = /douyin\.com/i.test(url) || /v\.douyin\.com/i.test(url)
+      if (isDouyinFlow) {
+        await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {})
+      }
+
+      let waitMs = WAIT_FOR
+      if (isDouyinFlow) waitMs = 5500
+      if (opts?.skipScreenshot) waitMs = Math.max(waitMs, 4500)
+      await page.waitForTimeout(waitMs)
 
       const pageTitle = await page.title().catch(() => null)
       const pageText = await page.evaluate(() => document.body?.innerText?.slice(0, 3000) ?? '').catch(() => '')
@@ -95,13 +116,15 @@ export class BrowserProbeService {
 
       // Screenshot
       let screenshotPath: string | null = null
-      try {
-        if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true })
-        screenshotPath = path.join(SCREENSHOT_DIR, `${taskUrlId}.jpg`)
-        await page.screenshot({ path: screenshotPath, type: 'jpeg', quality: 75, fullPage: false })
-      } catch (e) {
-        this.logger.warn(`Screenshot failed for ${url}: ${e}`)
-        screenshotPath = null
+      if (!opts?.skipScreenshot) {
+        try {
+          if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true })
+          screenshotPath = path.join(SCREENSHOT_DIR, `${taskUrlId}.jpg`)
+          await page.screenshot({ path: screenshotPath, type: 'jpeg', quality: 75, fullPage: false })
+        } catch (e) {
+          this.logger.warn(`Screenshot failed for ${url}: ${e}`)
+          screenshotPath = null
+        }
       }
 
       return {
@@ -113,7 +136,7 @@ export class BrowserProbeService {
         errorCode: null,
       }
     } catch (err: any) {
-      const errorCode = err?.name === 'TimeoutError' ? 'timeout' : 'browser_error'
+      const errorCode = this.mapNavigationError(err)
       this.logger.error(`Browser probe failed for ${url}: ${err?.message}`)
       return {
         pageTitle: null,
@@ -134,5 +157,20 @@ export class BrowserProbeService {
       this.playwright = require('playwright')
     }
     return this.playwright
+  }
+
+  /** 把 Playwright/Chromium 抛出的导航异常归一成 HTTP 层一致的 errorCode */
+  private mapNavigationError(err: any): string {
+    if (err?.name === 'TimeoutError') return 'timeout'
+    const msg = String(err?.message || '')
+
+    if (/ERR_NAME_NOT_RESOLVED|ERR_DNS_/i.test(msg)) return 'dns_failed'
+    if (/ERR_CONNECTION_REFUSED|NS_ERROR_CONNECTION_REFUSED/i.test(msg)) return 'connection_refused'
+    if (/ERR_CONNECTION_RESET|NS_ERROR_NET_RESET/i.test(msg)) return 'connection_reset'
+    if (/ERR_CONNECTION_CLOSED|ERR_EMPTY_RESPONSE/i.test(msg)) return 'connection_closed'
+    if (/ERR_ADDRESS_UNREACHABLE|ERR_NETWORK_CHANGED|NS_ERROR_UNKNOWN_HOST/i.test(msg)) return 'unreachable'
+    if (/ERR_CERT_|ERR_SSL_|NS_ERROR_NET_INTERRUPT/i.test(msg)) return 'ssl_error'
+
+    return 'browser_error'
   }
 }

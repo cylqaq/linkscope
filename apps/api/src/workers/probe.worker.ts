@@ -63,7 +63,7 @@ export class ProbeWorker {
 
       // L2: Browser probe (if needed)
       let browserResult = null
-      if (this.httpProbe.shouldTriggerBrowserFallback(httpResult)) {
+      if (this.httpProbe.shouldTriggerBrowserFallback(url, httpResult)) {
         try {
           browserResult = await this.browserProbe.probe(url, taskUrlId)
 

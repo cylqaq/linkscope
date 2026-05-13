@@ -2,8 +2,9 @@ import { Injectable, Logger } from '@nestjs/common'
 import OpenAI from 'openai'
 import axios from 'axios'
 import type { AiJudgementInput, AiJudgementOutput, InternalStatus, ReasonCode, RetryStrategy } from '@linkscope/shared'
+import { BrowserProbeService } from '../probe/browser-probe.service'
 
-const PROMPT_VERSION = '1.1.0'
+const PROMPT_VERSION = '1.3.0'
 
 // Tool definition - lets DeepSeek actively fetch page content just like in its own web UI
 const FETCH_URL_TOOL: OpenAI.Chat.ChatCompletionTool = {
@@ -24,26 +25,52 @@ const FETCH_URL_TOOL: OpenAI.Chat.ChatCompletionTool = {
   },
 }
 
+const FETCH_RENDERED_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'fetch_url_rendered',
+    description:
+      '用无头浏览器打开 URL、执行前端跳转后提取可见文本与最终地址。用于抖音短链、强 JS 页等：纯 HTTP 常为 404 或空壳，必须用本工具才能看到真实状态。较慢，仅在 fetch_url 明显不可靠时调用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '要渲染探测的 URL' },
+      },
+      required: ['url'],
+    },
+  },
+}
+
 const SYSTEM_PROMPT = `你是一个专业的链接内容有效性判断引擎。
-你的任务是判断：给定URL的目标内容是否仍然可以被正常访问？
+你的任务是判断：给定 URL 对应的目标内容是否仍然可以被普通用户正常访问？
 
-你有一个工具 fetch_url 可以主动获取页面内容。当仅凭HTTP状态码和已知信息无法确定时，主动调用此工具查看页面。
+你拥有两个工具可主动获取证据，必须根据情况选择正确的工具：
+1) fetch_url：用纯 HTTP 客户端（axios）请求页面，速度快但易被反爬误导。适合普通文章、API 类目标。
+2) fetch_url_rendered：用真实无头浏览器渲染页面，能跑前端跳转、规避大部分反爬。适用场景（强烈建议优先调用）：
+   - HTTP 状态与常识矛盾（如抖音/B站短链返回 404 但视频可播）
+   - 出现 connection_refused / connection_reset / connection_closed / unreachable / timeout 等"看似断网"错误（必须用浏览器二次验证；浏览器若也连不上，才能确诊死链）
+   - 拿到的正文极短或像 JS 壳
 
-最终输出严格的JSON格式：
+调用建议：
+- 上下文显示"AI 触发原因 = http_status_conflict"或"connection_failure_double_check"时，第一次工具调用应直接选 fetch_url_rendered，不要先 fetch_url。
+- 重定向到根域 / 登录墙等场景，结合页面文本与平台特征判断。
+- 至多两次工具调用即应给出结论。
+
+最终输出严格的 JSON：
 {
   "decision": "accessible" | "dead_link" | "review_required",
   "internalStatus": "ok" | "removed" | "soft_404" | "hard_404" | "login_required" | "forbidden" | "rate_limited" | "transient_error" | "risk_blocked" | "unknown",
-  "reasonCode": "http_200_ok" | "http_404" | "http_410" | "soft_404_ai" | "removed_pattern" | "video_removed" | "account_private" | "account_banned" | "region_restricted" | "content_deleted" | "auth_403" | "auth_401" | "timeout" | "dns_failed" | "blocked_by_waf" | "redirect_to_home" | "redirect_to_error" | "platform_detected" | "unknown",
-  "confidence": 0.0到1.0,
-  "reasoning": "简短的判断理由（中文，50字以内）",
+  "reasonCode": "http_200_ok" | "http_404" | "http_410" | "http_451" | "soft_404_ai" | "removed_pattern" | "video_removed" | "account_private" | "account_banned" | "region_restricted" | "content_deleted" | "auth_401" | "auth_403" | "timeout" | "dns_failed" | "ssl_error" | "connection_refused" | "connection_reset" | "connection_closed" | "unreachable" | "blocked_by_waf" | "redirect_to_home" | "redirect_to_error" | "platform_detected" | "unknown",
+  "confidence": 0.0 到 1.0,
+  "reasoning": "中文，50 字以内的判断理由",
   "nextAction": "no_retry" | "retry_with_backoff" | "need_login" | "need_adapter" | "send_to_agent"
 }
 
-判断规则：
-- "accessible"：页面有实质性内容，用户可以正常查看
-- "dead_link"：内容已删除/下架/不存在/账号注销，用户无法看到目标内容
-- "review_required"：无法明确判断（如需登录、地区限制），需要人工核查
-- confidence应真实反映判断把握度`
+最终判定标准：
+- accessible：页面有实质内容，用户可正常查看。
+- dead_link：内容已删除/下架/不存在/账号注销/站点已停服，用户无法访问目标内容。
+- review_required：信息不足、需登录、地区限制、运维抖动等，留人工核查。
+- confidence 必须真实反映把握度，不要默认 0.9。`
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
@@ -52,12 +79,14 @@ export class AiService {
   private readonly logger = new Logger(AiService.name)
   private clients: Map<string, OpenAI> = new Map()
 
+  constructor(private readonly browserProbe: BrowserProbeService) {}
+
   // Tool implementation: fetch URL and return text content for AI to read
   private async executeFetchUrl(url: string): Promise<string> {
     try {
       const resp = await axios.get(url, {
         timeout: 10000,
-        maxRedirects: 5,
+        maxRedirects: 10,
         headers: {
           'User-Agent': USER_AGENT,
           'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
@@ -82,6 +111,24 @@ export class AiService {
       return `状态码: ${statusLine}\n最终URL: ${finalUrl}\n页面文本:\n${bodyText}`
     } catch (err: any) {
       return `获取页面失败: ${err?.code || err?.message || '未知错误'}`
+    }
+  }
+
+  private async executeFetchRendered(url: string): Promise<string> {
+    try {
+      const snap = await this.browserProbe.lightFetchForAi(url)
+      if (snap.errorCode) {
+        return `渲染探测失败: ${snap.errorCode}\n请求URL: ${url}`
+      }
+      const sig = snap.domSignals.length ? `DOM 风险信号: ${JSON.stringify(snap.domSignals)}\n` : ''
+      return [
+        `最终URL: ${snap.finalUrl}`,
+        `标题: ${snap.pageTitle ?? '(无)'}`,
+        sig,
+        `正文摘录:\n${(snap.pageText ?? '').slice(0, 2800)}`,
+      ].join('\n')
+    } catch (e: any) {
+      return `渲染探测异常: ${e?.message || String(e)}`
     }
   }
 
@@ -116,7 +163,15 @@ export class AiService {
   async judge(
     input: AiJudgementInput,
     provider?: string,
-  ): Promise<{ output: AiJudgementOutput; latencyMs: number; tokenUsage: any; modelName: string; toolCallsUsed: number }> {
+  ): Promise<{
+    output: AiJudgementOutput
+    latencyMs: number
+    tokenUsage: any
+    modelName: string
+    toolCallsUsed: number
+    succeeded: boolean
+    failureReason?: string
+  }> {
     const usedProvider = provider || process.env.AI_PROVIDER || 'deepseek'
     const modelName = this.getModelName(usedProvider)
     const start = Date.now()
@@ -130,12 +185,14 @@ export class AiService {
     try {
       const client = this.getClient(usedProvider)
 
-      // Agentic loop: allow AI to call fetch_url up to 2 times
+      let renderedRound = 0
+
+      // Agentic loop: allow AI to call fetch tools up to 3 rounds
       for (let round = 0; round < 3; round++) {
         const response = await client.chat.completions.create({
           model: modelName,
           messages,
-          tools: [FETCH_URL_TOOL],
+          tools: [FETCH_URL_TOOL, FETCH_RENDERED_TOOL],
           tool_choice: round === 0 ? 'auto' : 'auto',
           temperature: 0.1,
           max_tokens: 1000,
@@ -157,6 +214,22 @@ export class AiService {
                 role: 'tool',
                 tool_call_id: toolCall.id,
                 content: result,
+              })
+            } else if (toolCall.function.name === 'fetch_url_rendered') {
+              const args = JSON.parse(toolCall.function.arguments || '{}')
+              this.logger.debug(`AI fetch_url_rendered: ${args.url}`)
+              toolCallsUsed++
+              let content: string
+              if (renderedRound >= 2) {
+                content = '本判定流程内渲染抓取次数已达上限，请基于已有信息输出 JSON 结论。'
+              } else {
+                renderedRound++
+                content = await this.executeFetchRendered(args.url)
+              }
+              messages.push({
+                role: 'tool',
+                tool_call_id: toolCall.id,
+                content,
               })
             }
           }
@@ -185,6 +258,7 @@ export class AiService {
           tokenUsage: response.usage,
           modelName: `${usedProvider}/${modelName}`,
           toolCallsUsed,
+          succeeded: true,
         }
       }
 
@@ -201,32 +275,45 @@ export class AiService {
           decision: 'review_required',
           internalStatus: 'unknown',
           reasonCode: 'unknown',
-          confidence: 0.3,
-          reasoning: 'AI判定失败，转人工复核',
+          confidence: 0,
+          reasoning: '',
           nextAction: 'no_retry',
         },
         latencyMs: Date.now() - start,
         tokenUsage: null,
         modelName: `${usedProvider}/${modelName}`,
         toolCallsUsed,
+        succeeded: false,
+        failureReason: err?.message ?? String(err),
       }
     }
   }
 
   private buildUserMessage(input: AiJudgementInput): string {
     const signals = input.domSignals.map(s => `[${s.type}] ${s.signal}: ${s.value}`).join('\n')
-    return `需要判断的URL: ${input.url}
+    const triggerHint =
+      input.triggerReason === 'http_status_conflict'
+        ? '（规则与 HTTP 状态冲突：HTTP 4xx 但被升级为 accessible，需要你用 fetch_url_rendered 确认真实页面）'
+        : input.triggerReason === 'connection_failure_double_check'
+          ? '（HTTP 层报连接级错误，请优先用 fetch_url_rendered 二次验证；若浏览器也无法访问，则确诊死链）'
+          : input.triggerReason === 'ambiguous_status'
+            ? '（规则置信度不足或状态模糊，需要你独立判断）'
+            : ''
+
+    return `需要判断的 URL: ${input.url}
 平台: ${input.platform}
-HTTP状态码: ${input.httpStatusCode ?? '无（连接失败）'}
-最终URL: ${input.finalUrl}
+AI 触发原因: ${input.triggerReason ?? 'low_confidence'} ${triggerHint}
+HTTP 状态码: ${input.httpStatusCode ?? '无（连接失败）'}
+HTTP 错误码: ${input.httpErrorCode ?? '无'}
+最终 URL: ${input.finalUrl}
 重定向链: ${input.redirectChain.length > 1 ? input.redirectChain.join(' → ') : '无重定向'}
 页面标题: ${input.pageTitle ?? '未知（未进行浏览器探测）'}
-已抓取页面文本（前500字）:
+已抓取页面文本（前 500 字）:
 ${input.pageTextSnippet?.slice(0, 500) ?? '无（未进行浏览器探测）'}
-DOM信号:
+DOM 信号:
 ${signals || '无'}
 
-请判断此链接的内容是否仍然可以正常访问。如果需要查看完整页面内容来作出判断，请调用 fetch_url 工具。`
+请按 system 中的规则与工具调用建议给出 JSON 结论。`
   }
 
   private sanitizeDecision(d: any): AiJudgementOutput['decision'] {
