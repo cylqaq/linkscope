@@ -1,9 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common'
 import axios, { AxiosError } from 'axios'
-import { detectPlatform, type HttpProbeResult } from '@linkscope/shared'
-
-const USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+import { detectPlatform, DEFAULT_USER_AGENT, type HttpProbeResult } from '@linkscope/shared'
 
 const TIMEOUT_MS = 15000
 const MAX_REDIRECTS = 10
@@ -58,7 +55,7 @@ export class HttpProbeService {
       maxRedirects: MAX_REDIRECTS,
       validateStatus: () => true, // Don't throw on 4xx/5xx
       headers: {
-        'User-Agent': USER_AGENT,
+        'User-Agent': DEFAULT_USER_AGENT,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       },

@@ -2,6 +2,10 @@
  * URL normalization and deduplication utilities
  */
 
+/** 默认 User-Agent — 在 HttpProbe / AI fetch_url 等所有出站请求里复用 */
+export const DEFAULT_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+
 const UTM_PARAMS = [
   'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
   'utm_id', 'fbclid', 'gclid', 'mc_eid', 'ref', '_ga',

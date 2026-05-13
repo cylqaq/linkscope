@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common'
-import type { BrowserProbeResult, DomSignal } from '@linkscope/shared'
+import { DEFAULT_USER_AGENT, type BrowserProbeResult, type DomSignal } from '@linkscope/shared'
 import { createHash } from 'crypto'
 import * as path from 'path'
 import * as fs from 'fs'
@@ -62,8 +62,7 @@ export class BrowserProbeService {
       })
 
       const context = await browser.newContext({
-        userAgent:
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        userAgent: DEFAULT_USER_AGENT,
         locale: 'zh-CN',
         viewport: { width: 1280, height: 800 },
         extraHTTPHeaders: { 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' },

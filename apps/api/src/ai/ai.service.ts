@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common'
 import OpenAI from 'openai'
 import axios from 'axios'
-import type { AiJudgementInput, AiJudgementOutput, InternalStatus, ReasonCode, RetryStrategy } from '@linkscope/shared'
+import { DEFAULT_USER_AGENT, type AiJudgementInput, type AiJudgementOutput, type InternalStatus, type ReasonCode, type RetryStrategy } from '@linkscope/shared'
 import { BrowserProbeService } from '../probe/browser-probe.service'
 
 const PROMPT_VERSION = '1.3.0'
@@ -72,8 +72,6 @@ const SYSTEM_PROMPT = `你是一个专业的链接内容有效性判断引擎。
 - review_required：信息不足、需登录、地区限制、运维抖动等，留人工核查。
 - confidence 必须真实反映把握度，不要默认 0.9。`
 
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name)
@@ -88,7 +86,7 @@ export class AiService {
         timeout: 10000,
         maxRedirects: 10,
         headers: {
-          'User-Agent': USER_AGENT,
+          'User-Agent': DEFAULT_USER_AGENT,
           'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
         },
