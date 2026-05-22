@@ -1,13 +1,14 @@
 import {
   Controller, Post, Get, Param, Query, Body, UploadedFile,
   UseInterceptors, ParseIntPipe, DefaultValuePipe, HttpCode,
-  HttpStatus, Res,
+  HttpStatus, Res, NotFoundException,
 } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
 import type { Response } from 'express'
 import { TasksService } from './tasks.service'
 import { ExportService } from '../export/export.service'
 import { extractUrlsFromText } from '@linkscope/shared'
+import * as fs from 'fs'
 import * as path from 'path'
 
 @Controller('tasks')
@@ -40,10 +41,10 @@ export class TasksController {
     let urls: string[] = []
 
     if (ext === '.txt' || ext === '.csv') {
-      const content = file.buffer?.toString('utf-8') ?? require('fs').readFileSync(file.path, 'utf-8')
+      const content = file.buffer?.toString('utf-8') ?? fs.readFileSync(file.path, 'utf-8')
       urls = extractUrlsFromText(content)
     } else if (ext === '.json') {
-      const content = file.buffer?.toString('utf-8') ?? require('fs').readFileSync(file.path, 'utf-8')
+      const content = file.buffer?.toString('utf-8') ?? fs.readFileSync(file.path, 'utf-8')
       const parsed = JSON.parse(content)
       const arr = Array.isArray(parsed) ? parsed : [parsed]
       urls = arr.flatMap((item: any) => {
@@ -92,6 +93,20 @@ export class TasksController {
     @Query('reasonCode') reasonCode?: string,
   ) {
     return this.tasksService.getTaskResults(id, { page, pageSize, finalStatus, platform, reasonCode })
+  }
+
+  /** L2 截图 JPEG（须属于该任务；路径由服务端按 taskUrlId 解析，见 D-017） */
+  @Get(':id/urls/:urlId/screenshot')
+  async getUrlScreenshot(
+    @Param('id') taskId: string,
+    @Param('urlId') taskUrlId: string,
+    @Res() res: Response,
+  ) {
+    const abs = await this.tasksService.getScreenshotAbsolutePath(taskId, taskUrlId)
+    if (!abs) throw new NotFoundException('截图不存在或未采集')
+    res.setHeader('Content-Type', 'image/jpeg')
+    res.setHeader('Cache-Control', 'private, max-age=120')
+    fs.createReadStream(abs).pipe(res)
   }
 
   @Get(':id/export')

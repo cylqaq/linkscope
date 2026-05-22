@@ -32,9 +32,12 @@ URL ─▶ L1 HttpProbe ─▶ L2 BrowserProbe (按需) ─▶ L3 ClassifyServic
 
 - Playwright Chromium，headless + stealth init script（去 `webdriver` 标记、补 `chrome.runtime`）。
 - 抖音域名等待 `networkidle`（12s 超时），其它站默认 `domcontentloaded` + 3s。
-- DOM 文本扫描 `DEAD_TEXT_PATTERNS` 通用「已删除/不存在」中英文模式。
+- DOM 文本扫描 `DEAD_TEXT_PATTERNS` 通用「已删除/不存在」中英文模式；命中写入 `domSignals.signal = dead_content_text`。
+- **用户屏幕提示库**：`ScreenHintsService` 提供启用的 `screen_hints` 行；按 `TaskUrl.platform` 与 `platform = generic` 过滤；对页面正文+标题做子串匹配（可选区分大小写），命中写入 `domSignals.signal = user_screen_hint` 并带 `hintId`。管理 UI：`/hints`（含 JSON 导出/导入、`POST /api/screen-hints/import`）；结果卡 `QuickHintFromResult` 一键写入；REST：`/api/screen-hints`。
+- **XHR/Fetch 取证**：监听页面 `xhr`/`fetch` 响应，写入 `networkSamples`（URL 去已知追踪参数；少量 JSON/文本 body 脱敏节选）；同步进 `Evidence` 与 AI 用户消息；**不单独**作为死链充分条件（避免静态资源 404 误判）。Prompt `1.3.2`。
+- **受控 XHR 下架子串**：`matchNetworkDeadDomSignals`（`packages/shared/src/platform-network-dead-hints.ts`）对 `networkSamples` 的 `url + snippet` 做白名单匹配，命中写入 `domSignals.signal = network_api_removed`；L3 输出 `network_json_removed`（D-015）。
 - `mapNavigationError(err)` 将 Chromium `ERR_CONNECTION_*` / `NS_ERROR_*` 翻译为与 L1 相同的 `ReasonCode`，使「两路一致 → 高置信死链」可成立。
-- `lightFetchForAi(url)` 跳过截图，给 AI 工具 `fetch_url_rendered` 复用。
+- `lightFetchForAi(url)` 跳过截图，给 AI 工具 `fetch_url_rendered` 复用（平台键由 URL `detectPlatform` 推导）。
 
 ## L3 · ClassifyService
 
@@ -65,10 +68,12 @@ classify():
 8. 401/403 → `review_required`（need_login）
 9. 5xx / 429 → `review_required`（retry）
 10. 平台 dead/login/private patterns
-11. 通用 `DOM domSignals` 命中
-12. HTTP 重定向到根域 + 浏览器无实质内容 → `dead_link / soft_404`
-13. HTTP 200 兜底 → `accessible / 0.75`
-14. 未知 → `review_required / 0.4`
+11. **用户屏幕提示**：`domSignals` 含 `user_screen_hint` → `dead_link` / `user_screen_hint` / 0.94
+12. **XHR 受控下架规则**：`domSignals` 含 `network_api_removed`（规则表 `packages/shared/src/platform-network-dead-hints.ts`）→ `dead_link` / `network_json_removed` / 0.91
+13. 通用内置 `dead_content_text`（`DEAD_TEXT_PATTERNS`）命中 → `soft_404_text`
+14. HTTP 重定向到根域 + 浏览器无实质内容 → `dead_link / soft_404`
+15. HTTP 200 兜底 → `accessible / 0.75`
+16. 未知 → `review_required / 0.4`
 
 ### `decideAiUse` 触发表
 
@@ -102,12 +107,15 @@ classify():
 ### `HttpProbeResult` / `BrowserProbeResult`
 - `errorCode` 字段使用统一 ReasonCode 字符串集（见 L1 描述）。
 - `BrowserProbeResult.domSignals` 由 L2 探测填入，L3 用作软 404 命中。
+- `BrowserProbeResult.networkSamples`：L2 监听 `xhr`/`fetch` 响应，记录经 `stripTrackingParams` 的 URL、HTTP 状态、方法与 JSON/文本**脱敏节选**（写入 `Evidence` 与 AI 上下文）。**原始节选条目本身**不自动判死链；另有 `matchNetworkDeadDomSignals` 在满足 D-015 白名单时追加 `domSignals.network_api_removed`。
 
 ### `Evidence`（前端展示主路径，D-010）
 - `finalUrl` = `canonicalizeFinalUrl(浏览器优先 → HTTP → 原 URL)` — 已去追踪参数（D-003）
 - `httpFinalUrl / browserFinalUrl` = 原始 URL（仅供排查）
+- `redirectChain`、`pageTitle`、`textSnippet`、`screenshotPath`（有截图时为 `{taskUrlId}.jpg`；**展示**走 `GET /api/tasks/:taskId/urls/:taskUrlId/screenshot`，见 D-017）、`platform`、`signals`
 - `verifiedBy` = `'http' | 'browser' | 'ai' | 'rule'`
 - `verificationNote` = HTTP 与最终结论冲突或网络拒连场景下的可读说明
+- `networkSamples`（可选）：与 L2 同源，XHR/Fetch 取证数组，供结果卡与人工/AI 排查（D-014）
 - `aiVerdict: AiVerdict` — 必填四态之一
 
 ### `AiVerdict`
@@ -137,15 +145,16 @@ classify():
 | 加新错误码 | 见上一节"5 处同步" |
 | 加 AI 工具（如官方 API 适配器） | `ai.service.ts` 工具定义 + 执行函数 + 提示词 |
 | 加规则分支 | `classify.applyRules`，**保持次序**（先反爬识别再硬死码） |
+| 加用户下架屏幕文案 | `screen_hints` + `ScreenHintsModule` + L2 子串匹配 + `applyRules` 中 `user_screen_hint` |
+| 加受控 XHR 下架子串规则 | `platform-network-dead-hints.ts`（含微博/快手等 REST 锚点规则，D-019）+ `BrowserProbeService` 合并 domSignals + `applyRules` 中 `network_json_removed` |
+| 批量导入屏幕提示 | `POST /api/screen-hints/import` + `ScreenHintsService.importMany` |
 | 加新 `verifiedBy` 值 | `types.ts` Evidence + ResultCard `VERIFIED_LABEL` |
-
----
 
 ## 数据库
 
 Prisma + Postgres。Schema 位于 `apps/api/prisma/schema.prisma`：
 
-`Task → TaskUrl → { HttpProbe, BrowserProbe, Classification, AiJudgement }`
+`Task → TaskUrl → { HttpProbe, BrowserProbe, Classification, AiJudgement }`，另 **`ScreenHint`**（用户维护的下架提示子串，不入任务子图）。
 
 `Classification.evidence` 是 `Json` 列承载 `Evidence` 对象 — 改 Evidence 字段无需迁移，但**前端必须容忍历史任务里没有新字段**。
 
@@ -162,5 +171,6 @@ Prisma + Postgres。Schema 位于 `apps/api/prisma/schema.prisma`：
 ## 前端
 
 - Next.js 14 App Router，`apps/web/src/app/page.tsx` 是聊天式提交入口；`history/page.tsx` 是历史任务列表。
+- **默认 API 访问**：未配置 `NEXT_PUBLIC_API_URL` 时，浏览器请求走**同源**路径 `/api/*`，由 `next.config.js` rewrites 转发到 Nest（`API_URL`，默认 `http://127.0.0.1:3001/api`），避免 LAN IP 访问前端时的 CORS；截图 `<img>` 使用 `getWebVisibleApiRoot()` 同源策略一致。
 - `ResultCard.tsx` 是单 URL 的展开卡，**唯一被允许直接读 `evidence.*` 的组件**（D-010）。
 - 前端不维护自己的 `Evidence` 类型副本，全部从 `@linkscope/shared` 导入。

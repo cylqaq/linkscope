@@ -1,6 +1,8 @@
 'use client'
 
 import { useState } from 'react'
+import QuickHintFromResult from '@/components/results/QuickHintFromResult'
+import { getWebVisibleApiRoot } from '@/lib/api'
 
 const STATUS_CONFIG = {
   accessible: { label: '正常', color: 'text-emerald-400', dot: 'bg-emerald-400' },
@@ -17,6 +19,8 @@ const REASON_LABEL: Record<string, string> = {
   auth_403: '无权限',
   soft_404_text: '软 404（文本）',
   soft_404_ai: '软 404（AI）',
+  user_screen_hint: '自定义屏幕提示（下架/失效）',
+  network_json_removed: '接口节选（下架/删除）',
   removed_pattern: '平台下架',
   video_removed: '视频已删除',
   account_private: '账号私密',
@@ -76,6 +80,15 @@ export default function ResultCard({ result }: { result: any }) {
   const httpContradicts = httpStatus !== null && httpStatus >= 400 && cls?.finalStatus === 'accessible'
 
   const aiVerdict = evidence.aiVerdict as AiVerdict | undefined
+
+  const networkSamples = (evidence.networkSamples?.length ? evidence.networkSamples : browserProbe?.networkSamples) ?? []
+  const hasNetwork = Array.isArray(networkSamples) && networkSamples.length > 0
+
+  const hasScreenshot = !!(evidence.screenshotPath ?? browserProbe?.screenshotPath)
+  const screenshotUrl =
+    hasScreenshot && result.taskId
+      ? `${getWebVisibleApiRoot()}/tasks/${result.taskId}/urls/${result.id}/screenshot`
+      : null
 
   return (
     <div
@@ -138,6 +151,22 @@ export default function ResultCard({ result }: { result: any }) {
             </Row>
           )}
 
+          {cls?.reasonCode === 'user_screen_hint' &&
+            Array.isArray(browserProbe?.domSignals) &&
+            browserProbe.domSignals.filter((s: { signal?: string }) => s.signal === 'user_screen_hint').length > 0 && (
+              <Row label="命中提示">
+                <ul className="list-disc pl-4 space-y-0.5 text-[#94a3b8]">
+                  {browserProbe.domSignals
+                    .filter((s: { signal?: string }) => s.signal === 'user_screen_hint')
+                    .map((s: { value?: string; hintId?: string }, i: number) => (
+                      <li key={(s.hintId ?? '') + i} className="break-all">
+                        {s.value ?? '(无文案)'}
+                      </li>
+                    ))}
+                </ul>
+              </Row>
+            )}
+
           {httpStatus !== null && (
             <Row label="HTTP 状态">
               <span className={httpContradicts ? 'text-amber-300' : ''}>
@@ -185,9 +214,74 @@ export default function ResultCard({ result }: { result: any }) {
 
           {aiVerdict && <AiVerdictRow verdict={aiVerdict} />}
 
-          {browserProbe?.screenshotPath && (
+          {cls?.reasonCode === 'network_json_removed' &&
+            Array.isArray(browserProbe?.domSignals) &&
+            browserProbe.domSignals.filter((s: { signal?: string }) => s.signal === 'network_api_removed').length > 0 && (
+              <Row label="XHR 规则命中">
+                <ul className="list-disc pl-4 space-y-0.5 text-[#94a3b8]">
+                  {browserProbe.domSignals
+                    .filter((s: { signal?: string }) => s.signal === 'network_api_removed')
+                    .map((s: { value?: string }, i: number) => (
+                      <li key={i} className="break-all font-mono text-[11px]">
+                        {s.value ?? '-'}
+                      </li>
+                    ))}
+                </ul>
+              </Row>
+            )}
+
+          {hasNetwork && (
+            <Row label="XHR 取证">
+              <div className="space-y-2 max-h-52 overflow-y-auto">
+                {networkSamples.map((n: Record<string, unknown>, i: number) => (
+                  <div key={i} className="rounded border border-[#2a2d3a] bg-[#0f1117]/80 p-2 text-[11px] font-mono">
+                    <div className="text-[#94a3b8]">
+                      <span className={typeof n.status === 'number' && n.status >= 400 ? 'text-red-300/90' : ''}>
+                        {String(n.status ?? '')}
+                      </span>{' '}
+                      {String(n.method ?? '')} {String(n.resourceType ?? '')}{' '}
+                      <span className="text-[#64748b]">{String(n.contentType ?? '')}</span>
+                    </div>
+                    <div className="break-all text-[#cbd5e1] mt-0.5" title={String(n.url ?? '')}>
+                      {short(String(n.url ?? ''), 100)}
+                    </div>
+                    {typeof n.snippet === 'string' && n.snippet.length > 0 && (
+                      <pre className="mt-1 text-[10px] text-[#64748b] whitespace-pre-wrap break-all max-h-28 overflow-y-auto">
+                        {n.snippet.length > 800 ? (n.snippet as string).slice(0, 800) + '…' : n.snippet}
+                      </pre>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Row>
+          )}
+
+          {(evidence.textSnippet || evidence.pageTitle) && (
+            <QuickHintFromResult
+              platform={result.platform ?? 'generic'}
+              pageTitle={evidence.pageTitle}
+              textSnippet={evidence.textSnippet}
+            />
+          )}
+
+          {screenshotUrl && (
             <Row label="截图">
-              <span className="text-[#475569]">已采集</span>
+              <div className="space-y-1" onClick={e => e.stopPropagation()}>
+                <a
+                  href={screenshotUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-indigo-400 hover:underline text-[11px]"
+                >
+                  新标签打开原图
+                </a>
+                <img
+                  src={screenshotUrl}
+                  alt="L2 探测视口截图"
+                  className="max-w-full rounded-lg border border-[#2a2d3a] max-h-56 object-contain bg-black/40"
+                  loading="lazy"
+                />
+              </div>
             </Row>
           )}
         </div>

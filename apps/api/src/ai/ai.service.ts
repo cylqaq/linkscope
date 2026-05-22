@@ -4,7 +4,7 @@ import axios from 'axios'
 import { DEFAULT_USER_AGENT, type AiJudgementInput, type AiJudgementOutput, type InternalStatus, type ReasonCode, type RetryStrategy } from '@linkscope/shared'
 import { BrowserProbeService } from '../probe/browser-probe.service'
 
-const PROMPT_VERSION = '1.3.0'
+const PROMPT_VERSION = '1.3.2'
 
 // Tool definition - lets DeepSeek actively fetch page content just like in its own web UI
 const FETCH_URL_TOOL: OpenAI.Chat.ChatCompletionTool = {
@@ -50,6 +50,8 @@ const SYSTEM_PROMPT = `你是一个专业的链接内容有效性判断引擎。
    - HTTP 状态与常识矛盾（如抖音/B站短链返回 404 但视频可播）
    - 出现 connection_refused / connection_reset / connection_closed / unreachable / timeout 等"看似断网"错误（必须用浏览器二次验证；浏览器若也连不上，才能确诊死链）
    - 拿到的正文极短或像 JS 壳
+   - 用户消息含「XHR/Fetch 取证」时：其中为浏览器内接口响应的 URL、HTTP 状态与 JSON/文本节选（已脱敏）。若节选中出现与「下架/删除/无权限」一致的业务字段或错误码，可与页面文本交叉验证；勿仅凭单条孤立的 4xx 静态资源请求判整页死链。
+   - DOM 信号若含 network_api_removed，表示已命中代码维护的「URL 子串 + 响应节选」受控规则（见项目 platform-network-dead-hints）；与取证 JSON 对照后再下结论。
 
 调用建议：
 - 上下文显示"AI 触发原因 = http_status_conflict"或"connection_failure_double_check"时，第一次工具调用应直接选 fetch_url_rendered，不要先 fetch_url。
@@ -60,7 +62,7 @@ const SYSTEM_PROMPT = `你是一个专业的链接内容有效性判断引擎。
 {
   "decision": "accessible" | "dead_link" | "review_required",
   "internalStatus": "ok" | "removed" | "soft_404" | "hard_404" | "login_required" | "forbidden" | "rate_limited" | "transient_error" | "risk_blocked" | "unknown",
-  "reasonCode": "http_200_ok" | "http_404" | "http_410" | "http_451" | "soft_404_ai" | "removed_pattern" | "video_removed" | "account_private" | "account_banned" | "region_restricted" | "content_deleted" | "auth_401" | "auth_403" | "timeout" | "dns_failed" | "ssl_error" | "connection_refused" | "connection_reset" | "connection_closed" | "unreachable" | "blocked_by_waf" | "redirect_to_home" | "redirect_to_error" | "platform_detected" | "unknown",
+  "reasonCode": "http_200_ok" | "http_404" | "http_410" | "http_451" | "soft_404_text" | "soft_404_ai" | "user_screen_hint" | "network_json_removed" | "removed_pattern" | "video_removed" | "account_private" | "account_banned" | "region_restricted" | "content_deleted" | "auth_401" | "auth_403" | "timeout" | "dns_failed" | "ssl_error" | "connection_refused" | "connection_reset" | "connection_closed" | "unreachable" | "blocked_by_waf" | "redirect_to_home" | "redirect_to_error" | "platform_detected" | "unknown",
   "confidence": 0.0 到 1.0,
   "reasoning": "中文，50 字以内的判断理由",
   "nextAction": "no_retry" | "retry_with_backoff" | "need_login" | "need_adapter" | "send_to_agent"
@@ -119,10 +121,15 @@ export class AiService {
         return `渲染探测失败: ${snap.errorCode}\n请求URL: ${url}`
       }
       const sig = snap.domSignals.length ? `DOM 风险信号: ${JSON.stringify(snap.domSignals)}\n` : ''
+      const net =
+        snap.networkSamples?.length ?
+          `XHR/Fetch 取证（${snap.networkSamples.length} 条，URL 已脱敏追踪参数；节选或含业务错误码时可优先采信）：\n${JSON.stringify(snap.networkSamples).slice(0, 12000)}\n`
+        : ''
       return [
         `最终URL: ${snap.finalUrl}`,
         `标题: ${snap.pageTitle ?? '(无)'}`,
         sig,
+        net,
         `正文摘录:\n${(snap.pageText ?? '').slice(0, 2800)}`,
       ].join('\n')
     } catch (e: any) {
@@ -289,6 +296,10 @@ export class AiService {
 
   private buildUserMessage(input: AiJudgementInput): string {
     const signals = input.domSignals.map(s => `[${s.type}] ${s.signal}: ${s.value}`).join('\n')
+    const netBlock =
+      input.networkSamples?.length ?
+        `XHR/Fetch 取证（${input.networkSamples.length} 条）:\n${JSON.stringify(input.networkSamples).slice(0, 14000)}\n`
+        : ''
     const triggerHint =
       input.triggerReason === 'http_status_conflict'
         ? '（规则与 HTTP 状态冲突：HTTP 4xx 但被升级为 accessible，需要你用 fetch_url_rendered 确认真实页面）'
@@ -310,7 +321,7 @@ HTTP 错误码: ${input.httpErrorCode ?? '无'}
 ${input.pageTextSnippet?.slice(0, 500) ?? '无（未进行浏览器探测）'}
 DOM 信号:
 ${signals || '无'}
-
+${netBlock ? `---\n${netBlock}` : ''}
 请按 system 中的规则与工具调用建议给出 JSON 结论。`
   }
 

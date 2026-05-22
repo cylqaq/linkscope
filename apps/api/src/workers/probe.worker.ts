@@ -65,7 +65,7 @@ export class ProbeWorker {
       let browserResult = null
       if (this.httpProbe.shouldTriggerBrowserFallback(url, httpResult)) {
         try {
-          browserResult = await this.browserProbe.probe(url, taskUrlId)
+          browserResult = await this.browserProbe.probe(url, taskUrlId, { platform: taskUrl.platform })
 
           await this.prisma.browserProbe.upsert({
             where: { taskUrlId },
@@ -76,6 +76,7 @@ export class ProbeWorker {
               finalUrl: browserResult.finalUrl,
               screenshotPath: browserResult.screenshotPath,
               domSignals: browserResult.domSignals as any,
+              networkSamples: browserResult.networkSamples as any,
               errorCode: browserResult.errorCode,
             },
             update: {
@@ -84,6 +85,7 @@ export class ProbeWorker {
               finalUrl: browserResult.finalUrl,
               screenshotPath: browserResult.screenshotPath,
               domSignals: browserResult.domSignals as any,
+              networkSamples: browserResult.networkSamples as any,
             },
           })
         } catch (browserErr) {

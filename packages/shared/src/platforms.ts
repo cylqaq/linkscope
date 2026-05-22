@@ -253,3 +253,10 @@ export function detectPlatform(url: string): PlatformConfig | null {
     return null
   }
 }
+
+/** 屏幕文案规则可选 `platform` 字段：各已知平台 + 全平台通用 */
+export const SCREEN_HINT_PLATFORM_SLUGS: readonly string[] = [...PLATFORM_CONFIGS.map(c => c.id), 'generic']
+
+export function isScreenHintPlatformSlug(s: string): boolean {
+  return SCREEN_HINT_PLATFORM_SLUGS.includes(s)
+}

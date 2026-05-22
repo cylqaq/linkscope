@@ -1,7 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { InjectQueue } from '@nestjs/bull'
 import { Queue } from 'bull'
+import * as fs from 'fs'
+import * as path from 'path'
 import { PrismaService } from '../prisma/prisma.service'
+import { resolveScreenshotStorageDir } from '../screenshot-storage'
 import { normalizeUrl, dedupeKey, extractUrlsFromText, isValidUrl, detectPlatform } from '@linkscope/shared'
 
 @Injectable()
@@ -136,6 +139,7 @@ export class TasksService {
               screenshotPath: true,
               errorCode: true,
               domSignals: true,
+              networkSamples: true,
             },
           },
           classification: true,
@@ -168,5 +172,22 @@ export class TasksService {
         data: { status: 'completed', completedAt: new Date() },
       })
     }
+  }
+
+  /**
+   * L2 截图：仅允许读取 `{SCREENSHOT_DIR}/{taskUrlId}.jpg`，且该 URL 须属于 taskId（防路径穿越与越权）。
+   */
+  async getScreenshotAbsolutePath(taskId: string, taskUrlId: string): Promise<string | null> {
+    const row = await this.prisma.taskUrl.findFirst({
+      where: { id: taskUrlId, taskId },
+      select: { browserProbe: { select: { screenshotPath: true } } },
+    })
+    if (!row?.browserProbe?.screenshotPath) return null
+
+    const dir = resolveScreenshotStorageDir()
+    const filePath = path.resolve(dir, `${taskUrlId}.jpg`)
+    if (!filePath.startsWith(dir + path.sep)) return null
+    if (!fs.existsSync(filePath)) return null
+    return filePath
   }
 }

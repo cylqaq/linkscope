@@ -4,27 +4,11 @@
 >
 > 模板见文末「下轮占位」。
 
-## 上轮摘要（2026-05-13 · Round 4 · 文档驱动 + 跨端常量收敛）
+## 上轮摘要（2026-05-15 · Round 10 · 默认同源 /api 与开发 CORS 闭环）
 
-- **问题**：
-  - 项目缺乏接力规范，新对话/新 agent 难以快速理解架构与已有约束，存在重复犯错风险。
-  - `USER_AGENT` 字面量在 3 个服务里各自定义，违反「单一来源」原则。
-- **措施**：
-  - 新增 `AGENTS.md`（项目根，Cursor 自动注入）：必读三件套清单、工作纪律、命令速查、边界。
-  - 新增 `docs/ARCHITECTURE.md`：分层流水线、`applyRules` 次序、`decideAiUse` 触发表、数据契约、扩展点速查、跨文件同步清单。
-  - 新增 `docs/DECISIONS.md`：把前 3 轮决策固化为 D-001 ~ D-010；本轮再追加 D-011 ~ D-012。
-  - 简化 `docs/upgrade-plans/README.md` 为流程纪律；`CURRENT.md` 模板化为「上轮摘要 + 下轮占位」。
-  - 删除 `docs/upgrade-plans/ARCHITECTURE.md`（迁移到 `docs/ARCHITECTURE.md`，避免双份）。
-  - 代码层：把 `User-Agent` 字面量抽到 `packages/shared/src/url-utils.ts#DEFAULT_USER_AGENT`，三处 service 改为 import；记入 D-011。
-- **新增决策**：D-011（跨端常量唯一来源）、D-012（文档驱动迭代）。
-- **涉及文件**：
-  - `AGENTS.md`（新）
-  - `docs/ARCHITECTURE.md`（新，替代 `upgrade-plans/ARCHITECTURE.md`）
-  - `docs/DECISIONS.md`（新）
-  - `docs/upgrade-plans/{README,CURRENT}.md`（重写）
-  - `packages/shared/src/url-utils.ts`
-  - `apps/api/src/probe/{http-probe,browser-probe}.service.ts`
-  - `apps/api/src/ai/ai.service.ts`
+- **问题**：浏览器用 `http://172.*` 等打开 Next 时，默认直连 `localhost:3001` 触发 **CORS**；API 未启动时 `Failed to fetch` 提示笼统。
+- **措施**：未配 `NEXT_PUBLIC_API_URL` 时 `fetch` 走 **`当前站点 + /api`**，由 `next.config.js` rewrite 到 Nest（`API_URL`，默认 `127.0.0.1:3001`）；截图 `<img>` 用 `getWebVisibleApiRoot()` 同源；`humanizeNetworkError` 明确「先起 API」；Nest **非 production** 对 RFC1918 Origin 放行 + `CORS_EXTRA_ORIGINS`；`.env.example` 与 `ARCHITECTURE` 说明。
+- **决策**：`DECISIONS.md` **D-020**。
 
 ---
 
@@ -38,3 +22,5 @@
 - 拟措施：
 - 风险/不做的事：
 ```
+
+**建议下一轮（未排期）**：截图 **OCR 或 VLM**、D-019 回归样本与单测、`PLATFORM_NETWORK_DEAD_HINT_RULES` 补全、可选鉴权与多租户绑定 `screen_hints`。

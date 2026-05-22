@@ -63,44 +63,80 @@ export class ClassifyService {
 
     const baseEvidence = this.buildEvidence(url, http, browser, platform, ruleResult)
 
+    let result: ClassificationResult
+
     if (!aiDecision.use) {
-      return {
+      result = {
         ...ruleResult,
         evidence: { ...baseEvidence, aiVerdict: { state: 'skipped', reason: aiDecision.reason } },
         sourceOfTruth: 'rule_only',
         retryStrategy: this.getRetryStrategy(ruleResult.internalStatus),
       }
-    }
+    } else {
+      const aiOutcome = await this.runAi(
+        taskUrlId,
+        url,
+        platform?.id ?? 'generic',
+        http,
+        browser,
+        baseEvidence.finalUrl,
+        aiDecision.reason,
+      )
 
-    const aiOutcome = await this.runAi(taskUrlId, url, platform?.id ?? 'generic', http, browser, baseEvidence.finalUrl, aiDecision.reason)
+      if (!aiOutcome.succeeded) {
+        result = {
+          ...ruleResult,
+          evidence: {
+            ...baseEvidence,
+            aiVerdict: { state: 'failed', reason: aiOutcome.failureReason },
+          },
+          sourceOfTruth: 'rule_only',
+          retryStrategy: this.getRetryStrategy(ruleResult.internalStatus),
+        }
+      } else {
+        const fused = this.fuseAiWithRules(ruleResult, aiOutcome.output, aiDecision.reason)
+        const verdict: AiVerdict =
+          aiOutcome.output.decision === ruleResult.finalStatus
+            ? { state: 'agree', reasoning: aiOutcome.output.reasoning, confidence: aiOutcome.output.confidence }
+            : {
+                state: 'disagree',
+                reasoning: aiOutcome.output.reasoning,
+                confidence: aiOutcome.output.confidence,
+                decision: aiOutcome.output.decision,
+              }
 
-    if (!aiOutcome.succeeded) {
-      return {
-        ...ruleResult,
-        evidence: {
-          ...baseEvidence,
-          aiVerdict: { state: 'failed', reason: aiOutcome.failureReason },
-        },
-        sourceOfTruth: 'rule_only',
-        retryStrategy: this.getRetryStrategy(ruleResult.internalStatus),
+        result = {
+          ...fused,
+          evidence: { ...baseEvidence, verifiedBy: 'ai', aiVerdict: verdict },
+          sourceOfTruth: 'rule_plus_ai',
+        }
       }
     }
 
-    const fused = this.fuseAiWithRules(ruleResult, aiOutcome.output, aiDecision.reason)
-    const verdict: AiVerdict =
-      aiOutcome.output.decision === ruleResult.finalStatus
-        ? { state: 'agree', reasoning: aiOutcome.output.reasoning, confidence: aiOutcome.output.confidence }
-        : {
-            state: 'disagree',
-            reasoning: aiOutcome.output.reasoning,
-            confidence: aiOutcome.output.confidence,
-            decision: aiOutcome.output.decision,
-          }
+    await this.maybeRecordUserHintHits(browser, result.reasonCode)
+    return result
+  }
 
-    return {
-      ...fused,
-      evidence: { ...baseEvidence, verifiedBy: 'ai', aiVerdict: verdict },
-      sourceOfTruth: 'rule_plus_ai',
+  private hasUserScreenHint(browser: BrowserProbeResult): boolean {
+    return browser.domSignals.some(s => s.signal === 'user_screen_hint')
+  }
+
+  private async maybeRecordUserHintHits(
+    browser: BrowserProbeResult | null,
+    reasonCode: ReasonCode,
+  ): Promise<void> {
+    if (!browser || reasonCode !== 'user_screen_hint') return
+    const ids = [
+      ...new Set(
+        browser.domSignals
+          .filter(s => s.signal === 'user_screen_hint' && s.hintId)
+          .map(s => s.hintId as string),
+      ),
+    ]
+    for (const id of ids) {
+      await this.prisma.screenHint
+        .update({ where: { id }, data: { hitCount: { increment: 1 } } })
+        .catch(() => {})
     }
   }
 
@@ -197,11 +233,19 @@ export class ClassifyService {
       }
     }
 
-    if (browser?.domSignals.length) {
+    if (browser && this.hasUserScreenHint(browser)) {
+      return ruleDead('soft_404', 'user_screen_hint', 0.94)
+    }
+
+    if (browser?.domSignals.some(s => s.signal === 'network_api_removed')) {
+      return ruleDead('removed', 'network_json_removed', 0.91)
+    }
+
+    if (browser?.domSignals.some(s => s.signal === 'dead_content_text')) {
       return ruleDead('soft_404', 'soft_404_text', 0.85)
     }
 
-    // 10) 纯 HTTP 重定向到根域 — 浏览器没证明实质内容时判死
+    // 14) 纯 HTTP 重定向到根域 — 浏览器没证明实质内容时判死
     if (http.redirectChain.length > 1 && this.redirectsToRoot(http.finalUrl || url) && !this.browserLooksHealthy(browser, platform)) {
       return {
         finalStatus: 'dead_link',
@@ -213,12 +257,12 @@ export class ClassifyService {
       }
     }
 
-    // 11) HTTP 200 — 默认可访问；置信不到 0.9 会触发 AI 复核
+    // 15) HTTP 200 — 默认可访问；置信不到 0.9 会触发 AI 复核
     if (code === 200) {
       return ruleAccessible('http_200_ok', 0.75)
     }
 
-    // 12) 兜底：未知
+    // 16) 兜底：未知
     return {
       finalStatus: 'review_required',
       internalStatus: 'unknown',
@@ -279,6 +323,7 @@ export class ClassifyService {
       pageTitle: browser?.pageTitle ?? null,
       pageTextSnippet: browser?.pageText ?? null,
       domSignals: browser?.domSignals ?? [],
+      networkSamples: browser?.networkSamples?.length ? browser.networkSamples : undefined,
       redirectChain: http.redirectChain,
     }
 
@@ -406,6 +451,9 @@ export class ClassifyService {
       ...(browser?.errorCode ? [`browser_error:${browser.errorCode}`] : []),
       ...(browser?.domSignals.map(s => s.signal) ?? []),
     ]
+    if (browser?.networkSamples?.length) {
+      signals.push(`network_xhr:${browser.networkSamples.length}`)
+    }
 
     let verifiedBy: Evidence['verifiedBy'] = 'rule'
     if (browser && !browser.errorCode) {
@@ -445,6 +493,7 @@ export class ClassifyService {
       signals,
       verifiedBy,
       verificationNote,
+      ...(browser?.networkSamples?.length ? { networkSamples: browser.networkSamples } : {}),
     }
   }
 
@@ -490,7 +539,9 @@ export class ClassifyService {
     for (const pattern of platform.deadPatterns) {
       if (pattern.test(text)) return false
     }
-    if (browser.domSignals.length) return false
+    if (browser.domSignals.some(s => s.signal === 'dead_content_text' || s.signal === 'user_screen_hint' || s.signal === 'network_api_removed')) {
+      return false
+    }
 
     if (text.trim().length >= 120) return true
 
@@ -511,7 +562,9 @@ export class ClassifyService {
     platform: ReturnType<typeof detectPlatform>,
   ): boolean {
     if (!browser || browser.errorCode) return false
-    if (browser.domSignals.length) return false
+    if (browser.domSignals.some(s => s.signal === 'dead_content_text' || s.signal === 'user_screen_hint' || s.signal === 'network_api_removed')) {
+      return false
+    }
 
     const text = (browser.pageText ?? '') + (browser.pageTitle ?? '')
     if (platform) {

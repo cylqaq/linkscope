@@ -16,6 +16,8 @@ const REASON_LABEL: Record<string, string> = {
   auth_403: '无权限访问',
   soft_404_text: '疑似软404(文本识别)',
   soft_404_ai: '疑似软404(AI识别)',
+  user_screen_hint: '用户自定义屏幕提示命中',
+  network_json_removed: 'XHR节选命中受控下架规则',
   removed_pattern: '平台下架特征匹配',
   video_removed: '视频已删除',
   account_private: '账号私密',

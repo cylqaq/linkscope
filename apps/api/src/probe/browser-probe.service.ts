@@ -1,16 +1,52 @@
 import { Injectable, Logger } from '@nestjs/common'
-import { DEFAULT_USER_AGENT, type BrowserProbeResult, type DomSignal } from '@linkscope/shared'
+import {
+  DEFAULT_USER_AGENT,
+  detectPlatform,
+  matchNetworkDeadDomSignals,
+  stripTrackingParams,
+  type BrowserProbeResult,
+  type DomSignal,
+  type NetworkSample,
+} from '@linkscope/shared'
+import { ScreenHintsService } from '../screen-hints/screen-hints.service'
+import { resolveScreenshotStorageDir } from '../screenshot-storage'
 import { createHash } from 'crypto'
 import * as path from 'path'
 import * as fs from 'fs'
 
-const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || './screenshots'
 const PAGE_TIMEOUT = 20000
 const WAIT_FOR = 3000
+
+const MAX_NETWORK_SAMPLES = 40
+const MAX_NETWORK_BODY_READS = 12
+const NETWORK_BODY_WAIT_MS = 3600
+const SNIPPET_MAX = 3200
+
+function redactResponseSnippet(raw: string, maxLen: number): string {
+  let s = raw.replace(/\r\n/g, '\n')
+  s = s.replace(
+    /"(access_token|refresh_token|id_token|password|pwd|secret|cookie|authorization)"\s*:\s*"[^"]*"/gi,
+    '"$1":"…"',
+  )
+  s = s.replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, 'Bearer …')
+  return s.slice(0, maxLen)
+}
+
+function dedupeNetworkSamples(rows: NetworkSample[]): NetworkSample[] {
+  const m = new Map<string, NetworkSample>()
+  for (const r of rows) {
+    const key = `${r.method}:${r.status}:${r.url}`
+    const prev = m.get(key)
+    if (!prev || (r.snippet?.length ?? 0) > (prev.snippet?.length ?? 0)) m.set(key, r)
+  }
+  return [...m.values()].slice(0, 28)
+}
 
 export interface BrowserProbeOptions {
   /** AI 工具调用等场景跳过截图以降延迟 */
   skipScreenshot?: boolean
+  /** 与 TaskUrl.platform 对齐，用于加载用户自定义下架文案 */
+  platform?: string
 }
 
 // Common soft-404 / removed text patterns (Chinese + English)
@@ -37,12 +73,14 @@ export class BrowserProbeService {
   private readonly logger = new Logger(BrowserProbeService.name)
   private playwright: any = null
 
+  constructor(private readonly screenHints: ScreenHintsService) {}
+
   /**
    * 供 AI 在无截图模式下拉取渲染后文本，避免 axios 在抖音等站拿到的假 404/空壳。
    */
   async lightFetchForAi(url: string): Promise<BrowserProbeResult> {
     const id = 'ai-' + createHash('sha256').update(url).digest('hex').slice(0, 20)
-    return this.probe(url, id, { skipScreenshot: true })
+    return this.probe(url, id, { skipScreenshot: true, platform: detectPlatform(url)?.id ?? 'generic' })
   }
 
   async probe(url: string, taskUrlId: string, opts?: BrowserProbeOptions): Promise<BrowserProbeResult> {
@@ -81,8 +119,61 @@ export class BrowserProbeService {
       page.setDefaultTimeout(PAGE_TIMEOUT)
 
       let finalUrl = url
+      const networkRows: NetworkSample[] = []
+      const bodyPromises: Promise<void>[] = []
+      let bodyReadBudget = 0
+
       page.on('response', (resp: any) => {
-        if (resp.request().isNavigationRequest()) finalUrl = resp.url()
+        try {
+          const req = resp.request()
+          if (req.isNavigationRequest()) finalUrl = resp.url()
+
+          const rt = req.resourceType()
+          if (rt !== 'xhr' && rt !== 'fetch') return
+          if (networkRows.length >= MAX_NETWORK_SAMPLES) return
+
+          let safeUrl = String(resp.url() || '')
+          if (!/^https?:\/\//i.test(safeUrl)) return
+          try {
+            safeUrl = stripTrackingParams(safeUrl)
+          } catch {
+            /* keep */
+          }
+          if (safeUrl.length > 480) safeUrl = safeUrl.slice(0, 480) + '…'
+
+          const headers = resp.headers() || {}
+          const ctRaw = (headers['content-type'] || '').split(';')[0].trim()
+          const contentType = ctRaw || 'unknown'
+          const status = resp.status()
+          const method = (req.method() as string) || 'GET'
+
+          const cl = headers['content-length']
+          if (cl && !Number.isNaN(parseInt(cl, 10)) && parseInt(cl, 10) > 524288) {
+            networkRows.push({ url: safeUrl, status, method, resourceType: rt, contentType })
+            return
+          }
+
+          const idx = networkRows.length
+          networkRows.push({ url: safeUrl, status, method, resourceType: rt, contentType })
+
+          if (
+            bodyReadBudget < MAX_NETWORK_BODY_READS &&
+            status === 200 &&
+            /json|javascript|text\/plain/i.test(contentType)
+          ) {
+            bodyReadBudget++
+            bodyPromises.push(
+              resp
+                .text()
+                .then((txt: string) => {
+                  if (networkRows[idx]) networkRows[idx].snippet = redactResponseSnippet(txt, SNIPPET_MAX)
+                })
+                .catch(() => {}),
+            )
+          }
+        } catch {
+          /* ignore */
+        }
       })
 
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT })
@@ -100,6 +191,12 @@ export class BrowserProbeService {
       const pageTitle = await page.title().catch(() => null)
       const pageText = await page.evaluate(() => document.body?.innerText?.slice(0, 3000) ?? '').catch(() => '')
 
+      await Promise.race([
+        Promise.all(bodyPromises).catch(() => {}),
+        new Promise<void>(resolve => setTimeout(resolve, NETWORK_BODY_WAIT_MS)),
+      ])
+      const networkSamples = dedupeNetworkSamples(networkRows)
+
       // Extract DOM signals
       const domSignals: DomSignal[] = []
 
@@ -113,13 +210,36 @@ export class BrowserProbeService {
         }
       }
 
+      const platformKey = opts?.platform?.trim() || detectPlatform(url)?.id || 'generic'
+      const haystack = `${pageText}\n${pageTitle ?? ''}`.slice(0, 12000)
+      const hints = await this.screenHints.getHintsForProbe(platformKey)
+      for (const h of hints) {
+        const matched = h.caseSensitive
+          ? haystack.includes(h.phrase)
+          : haystack.toLowerCase().includes(h.phrase.toLowerCase())
+        if (matched) {
+          domSignals.push({
+            type: 'text_match',
+            signal: 'user_screen_hint',
+            value: h.phrase.length > 200 ? `${h.phrase.slice(0, 200)}…` : h.phrase,
+            hintId: h.id,
+          })
+        }
+      }
+
+      for (const s of matchNetworkDeadDomSignals(platformKey, networkSamples)) {
+        domSignals.push(s)
+      }
+
       // Screenshot
       let screenshotPath: string | null = null
       if (!opts?.skipScreenshot) {
         try {
-          if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true })
-          screenshotPath = path.join(SCREENSHOT_DIR, `${taskUrlId}.jpg`)
-          await page.screenshot({ path: screenshotPath, type: 'jpeg', quality: 75, fullPage: false })
+          const shotDir = resolveScreenshotStorageDir()
+          if (!fs.existsSync(shotDir)) fs.mkdirSync(shotDir, { recursive: true })
+          const filePath = path.join(shotDir, `${taskUrlId}.jpg`)
+          await page.screenshot({ path: filePath, type: 'jpeg', quality: 75, fullPage: false })
+          screenshotPath = `${taskUrlId}.jpg`
         } catch (e) {
           this.logger.warn(`Screenshot failed for ${url}: ${e}`)
           screenshotPath = null
@@ -132,6 +252,7 @@ export class BrowserProbeService {
         finalUrl,
         screenshotPath,
         domSignals,
+        networkSamples,
         errorCode: null,
       }
     } catch (err: any) {
@@ -143,6 +264,7 @@ export class BrowserProbeService {
         finalUrl: url,
         screenshotPath: null,
         domSignals: [],
+        networkSamples: [],
         errorCode,
       }
     } finally {

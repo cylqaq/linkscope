@@ -92,3 +92,51 @@ AI 结果必须以 `AiVerdict` 四态之一暴露给前端，让用户能看见"
 3. 不留过期方案正文与死代码。
 
 接力 agent 跳过本流程视为违反约定。
+
+## D-013 · 用户屏幕提示规则（Round 5）
+
+用户可在 `/hints` 维护 `screen_hints`：**平台 slug**（`PLATFORM_CONFIGS.id` 或 `generic`）+ **页内可见子串**（默认不区分大小写）。L2 将命中写入 `domSignals`（`signal = user_screen_hint`，`hintId` 溯源）；L3 优先于内置 `dead_content_text` 命中，输出 `reasonCode = user_screen_hint`、`finalStatus = dead_link`（0.94），且仅在**最终** `reasonCode` 仍为 `user_screen_hint` 时递增 `hitCount`（避免 AI 改写后误计）。
+
+实现锚点：`ScreenHint` 模型、`ScreenHintsModule`、`BrowserProbeService`、`ClassifyService.applyRules` / `maybeRecordUserHintHits`、`packages/shared` 的 `SCREEN_HINT_PLATFORM_SLUGS` 与 `DomSignal.hintId`。
+
+## D-014 · L2 XHR/Fetch 取证边界（Round 5）
+
+L2 可采集浏览器上下文中的 `xhr`/`fetch` 响应摘要写入 `networkSamples` 并进入 `Evidence` 与 AI 提示，用于「接口已报业务删除/错误码」与 DOM 文本交叉验证。**禁止**仅凭单条与主内容无关的 4xx（如静态资源、广告请求）自动判整 URL 为 `dead_link`；是否采纳由规则层其它信号、`user_screen_hint`、平台 pattern 或 AI 综合判断。
+
+实现锚点：`BrowserProbeService` 响应监听与脱敏、`ClassifyService.buildEvidence`、`AiService` 用户消息与 system 提示（`1.3.x`）、`ResultCard` 展示。
+
+## D-015 · XHR 受控下架子串规则表（Round 6）
+
+在 `networkSamples` 基础上增加 **`packages/shared/src/platform-network-dead-hints.ts`**：每条规则须 **URL 多子串锚点**（含平台域名）且 **响应节选** 命中任一已知下架/错误文案（或 B 站 JSON `code:-404` 等），才写入 `domSignals.signal = network_api_removed`；L3 输出 `network_json_removed`（0.91），**优先级低于**用户 `user_screen_hint`。**禁止**未同时满足 URL 锚点与节选条件时仅凭 HTTP status 或孤立片段判死链。新增/放宽规则必须在真实页面回归并追加本条目或子 bullet。
+
+实现锚点：`matchNetworkDeadDomSignals`、`BrowserProbeService`、`ClassifyService.applyRules` 与反爬辅助函数中的 fatal dom 集合、AI `1.3.2`。
+
+## D-016 · 屏幕提示运营闭环（Round 7）
+
+允许在**检测结果展开卡**（`QuickHintFromResult`）内直接调用 `POST /api/screen-hints` 写入规则，并支持跳转 `/hints?platform=&phrase=&note=` 预填表单。批量数据走 **`POST /api/screen-hints/import`**，body 为 `{ items: [...] }` 或与导出一致的 `{ hints: [...] }`；服务端跳过非法行及 **(platform, phrase) 与库内已存在行完全相同** 的重复项，返回 `{ created, skipped }`。导出 JSON 含 `version / exportedAt / hints` 字段便于版本化。
+
+实现锚点：`ScreenHintsService.importMany`、`ScreenHintsController`、`apps/web` 的 `hints/page.tsx` 与 `ResultCard` / `QuickHintFromResult`。
+
+## D-017 · L2 截图只读 HTTP 与路径安全（Round 8）
+
+前端仅通过 **`GET /api/tasks/:taskId/urls/:taskUrlId/screenshot`** 拉取 JPEG；服务端须校验 `taskUrl` 属于该 `taskId` 且 `browserProbe.screenshotPath` 已记录，磁盘路径**仅**由 `SCREENSHOT_DIR` + `taskUrlId` + 固定扩展名拼接，并校验解析后的绝对路径落在目录前缀内（防路径穿越）。**不**把原始磁盘路径或任意用户输入拼进响应头/URL。未鉴权部署下该接口与任务结果同源暴露，后续若加鉴权须与此一致。
+
+实现锚点：`TasksService.getScreenshotAbsolutePath`、`TasksController.getUrlScreenshot`、`ResultCard` 与 `getWebVisibleApiRoot()`（未配 `NEXT_PUBLIC_API_URL` 时为同源 `/api`，见 D-020）。
+
+## D-018 · 截图元数据不落绝对路径（Round 9）
+
+`BrowserProbe` / `Evidence.screenshotPath` 仅保存 **`{taskUrlId}.jpg`** 文件名，表示已落盘；**禁止**把服务器绝对路径写入 JSON 响应。磁盘读写目录由 `apps/api/src/screenshot-storage.ts#resolveScreenshotStorageDir` 与 `SCREENSHOT_DIR` 统一解析，避免 L2 写入与只读接口各算各的相对路径。
+
+实现锚点：`browser-probe.service.ts`、`tasks.service.ts`、`packages/shared/src/types.ts` 字段注释。
+
+## D-019 · XHR 下架规则扩展（微博 / 快手）（Round 9）
+
+在 `PLATFORM_NETWORK_DEAD_HINT_RULES` 增加 **`weibo_aj_deleted`**（`weibo.com` + `aj` + 典型下架中文案）与 **`kuaishou_rest_deleted` / `kuaishou_gifshow_rest_deleted`**（`rest` 接口锚点 + 与平台 `deadPatterns` 对齐的节选），仍须满足 D-015 的 URL 多子串锚点 + 节选双条件；后续若在真实页发现误杀须收紧节选或追加超越条目。
+
+实现锚点：`packages/shared/src/platform-network-dead-hints.ts`。
+
+## D-020 · 前端默认同源 /api 与开发网段 CORS（Round 10）
+
+未配置 `NEXT_PUBLIC_API_URL` 时，浏览器 API 与截图资源走 **`/api` + Next rewrites**（`API_URL` → Nest），避免通过局域网 IP 打开前端时的跨域失败；Nest 在非 production 下对 **RFC1918 私网 Origin** 放行 CORS，便于仍直连 API 的调试。生产环境应依赖同源或显式白名单，不依赖私网通配。
+
+实现锚点：`apps/web/src/lib/api.ts`、`apps/web/next.config.js`、`apps/api/src/main.ts`。

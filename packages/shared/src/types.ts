@@ -30,6 +30,8 @@ export type ReasonCode =
   | 'account_banned'
   | 'region_restricted'
   | 'content_deleted'
+  | 'user_screen_hint'
+  | 'network_json_removed'
   | 'timeout'
   | 'dns_failed'
   | 'ssl_error'
@@ -105,15 +107,30 @@ export interface BrowserProbeResult {
   pageTitle: string | null
   pageText: string | null
   finalUrl: string
+  /** 有截图时为 `{taskUrlId}.jpg`；不落服务器绝对路径；展示走只读 HTTP（D-017） */
   screenshotPath: string | null
   domSignals: DomSignal[]
+  /** L2 采集的 XHR/Fetch 摘要（URL 已去已知追踪参数；snippet 已截断+脱敏） */
+  networkSamples: NetworkSample[]
   errorCode: string | null
+}
+
+/** 浏览器内 XHR/Fetch 响应取证项 */
+export interface NetworkSample {
+  url: string
+  status: number
+  method: string
+  resourceType: string
+  contentType: string
+  snippet?: string
 }
 
 export interface DomSignal {
   type: 'text_match' | 'element_exists' | 'page_structure'
   signal: string
   value: string
+  /** 对应 `screen_hints.id`，仅 `signal === 'user_screen_hint'` 时有值 */
+  hintId?: string
 }
 
 // Classification result
@@ -139,6 +156,7 @@ export interface Evidence {
   redirectChain: string[]
   pageTitle: string | null
   textSnippet: string | null
+  /** 与 BrowserProbe 一致：有截图时为 `{taskUrlId}.jpg`；展示走 GET …/screenshot */
   screenshotPath: string | null
   platform: PlatformId
   signals: string[]
@@ -146,6 +164,8 @@ export interface Evidence {
   verifiedBy?: 'http' | 'browser' | 'ai' | 'rule'
   /** HTTP 与最终结论冲突时（如 HTTP 404 → 实际可访问），给出可读说明 */
   verificationNote?: string | null
+  /** 与 BrowserProbe 同源：L2 XHR/Fetch 取证，供排查与 AI */
+  networkSamples?: NetworkSample[]
   /** AI 复核状态：见 AiVerdict */
   aiVerdict?: AiVerdict
 }
@@ -170,6 +190,7 @@ export interface AiJudgementInput {
   pageTitle: string | null
   pageTextSnippet: string | null
   domSignals: DomSignal[]
+  networkSamples?: NetworkSample[]
   redirectChain: string[]
 }
 

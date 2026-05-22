@@ -22,6 +22,7 @@ export default function HistoryPage() {
           <a href="/" className="text-sm text-[#64748b] hover:text-white transition-colors">← 返回</a>
           <h1 className="text-xl font-semibold text-white mt-2">历史任务</h1>
         </div>
+        <a href="/hints" className="text-sm text-[#64748b] hover:text-white transition-colors">屏幕提示规则</a>
       </div>
 
       {loading && <div className="text-[#64748b] text-sm">加载中...</div>}
