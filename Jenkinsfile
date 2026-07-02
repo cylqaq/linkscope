@@ -15,8 +15,8 @@ pipeline {
         )
         booleanParam(
             name: 'SKIP_TESTS',
-            defaultValue: false,
-            description: '跳过测试（紧急修复时使用）'
+            defaultValue: true,
+            description: '跳过测试（Jenkins 无 Node 环境时默认跳过）'
         )
         booleanParam(
             name: 'FORCE_DEPLOY',
