@@ -1,6 +1,4 @@
 import { Controller, Get } from '@nestjs/common'
-import { MetricsService } from './metrics.service'
-import { BrowserPoolService } from '../probe/browser-pool.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { InjectQueue } from '@nestjs/bull'
 import { Queue } from 'bull'
@@ -13,13 +11,9 @@ export interface HealthStatus {
   components: {
     database: ComponentHealth
     redis: ComponentHealth
-    browserPool: ComponentHealth
     queue: ComponentHealth
   }
   metrics: {
-    totalBrowsers: number
-    totalContexts: number
-    availableBrowsers: number
     queueWaiting: number
     queueActive: number
   }
@@ -36,8 +30,6 @@ export class HealthController {
   private readonly startTime = Date.now()
 
   constructor(
-    private readonly metricsService: MetricsService,
-    private readonly browserPoolService: BrowserPoolService,
     private readonly prisma: PrismaService,
     @InjectQueue('probe') private readonly probeQueue: Queue,
   ) {}
@@ -47,22 +39,15 @@ export class HealthController {
     const timestamp = new Date().toISOString()
     const uptime = Date.now() - this.startTime
 
-    // 并行检查各组件状态
     const [database, redis, queue] = await Promise.all([
       this.checkDatabase(),
       this.checkRedis(),
       this.checkQueue(),
     ])
-    const browserPool = this.checkBrowserPool()
 
-    // 确定整体状态
-    const components = { database, redis, browserPool, queue }
+    const components = { database, redis, queue }
     const status = this.determineOverallStatus(components)
 
-    // 获取浏览器池状态
-    const poolStatus = this.browserPoolService.getPoolStatus()
-
-    // 获取队列状态
     const [waiting, active] = await Promise.all([
       this.probeQueue.getWaitingCount(),
       this.probeQueue.getActiveCount(),
@@ -75,9 +60,6 @@ export class HealthController {
       uptime,
       components,
       metrics: {
-        totalBrowsers: poolStatus.totalBrowsers,
-        totalContexts: poolStatus.totalContexts,
-        availableBrowsers: poolStatus.availableBrowsers,
         queueWaiting: waiting,
         queueActive: active,
       },
@@ -109,15 +91,9 @@ export class HealthController {
     }
   }
 
-  @Get('metrics')
-  async getMetrics(): Promise<string> {
-    return this.metricsService.getMetrics()
-  }
-
   private async checkDatabase(): Promise<ComponentHealth> {
     const start = Date.now()
     try {
-      // 执行简单查询测试数据库连接
       await this.prisma.$queryRaw`SELECT 1`
       return {
         status: 'healthy',
@@ -136,7 +112,6 @@ export class HealthController {
   private async checkRedis(): Promise<ComponentHealth> {
     const start = Date.now()
     try {
-      // 通过 Bull 队列检查 Redis 连接
       const client = this.probeQueue.client
       await client.ping()
       return {
@@ -149,36 +124,6 @@ export class HealthController {
         status: 'unhealthy',
         message: `Redis error: ${error instanceof Error ? error.message : String(error)}`,
         latencyMs: Date.now() - start,
-      }
-    }
-  }
-
-  private checkBrowserPool(): ComponentHealth {
-    try {
-      const poolStatus = this.browserPoolService.getPoolStatus()
-      
-      if (poolStatus.totalBrowsers === 0) {
-        return {
-          status: 'degraded',
-          message: 'No browser instances initialized',
-        }
-      }
-
-      if (poolStatus.availableBrowsers === 0) {
-        return {
-          status: 'degraded',
-          message: 'No available browser instances',
-        }
-      }
-
-      return {
-        status: 'healthy',
-        message: `Browser pool has ${poolStatus.availableBrowsers} available instances`,
-      }
-    } catch (error) {
-      return {
-        status: 'unhealthy',
-        message: `Browser pool error: ${error instanceof Error ? error.message : String(error)}`,
       }
     }
   }

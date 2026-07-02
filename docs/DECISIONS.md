@@ -474,3 +474,31 @@ MCP 服务器不再使用 TODO 占位，改为注入 NestJS 服务实现完整�
 - `apps/api/src/classify/classify.service.ts`（规则引擎 + 辅助方法）
 - `apps/web/src/components/results/ResultCard.tsx`（REASON_LABEL）
 - `docs/DECISIONS.md`（本条目）
+
+## D-042 · 功能孤岛清理 + 逻辑 Bug 修复（Round 16）
+
+全局审查发现多处功能孤岛（注册但从未使用的模块）、逻辑 Bug 和代码不一致问题。
+
+修复内容：
+
+1. **删除 `BrowserPoolService`**：完整的浏览器池管理服务（289 行），但 `BrowserProbeService` 自己创建浏览器实例，从未调用池化接口。健康检查中的浏览器池状态始终为 0，具有误导性。
+2. **删除 `MetricsService`**：完整的 Prometheus 指标系统（220 行），但没有任何代码调用 `recordProbeLatency`、`recordProbeResult` 等方法。`/health/metrics` 端点始终返回空数据。
+3. **修复 `SmartWaitService.calculateWaitTime()` 条件顺序 Bug**：`networkRequestCount > 10` 的 `if` 在 `> 20` 之前，导致 `> 20` 分支永远不执行。调换条件顺序。
+4. **修复 `AiService.judge()` 冗余代码**：`tool_choice: round === 0 ? 'auto' : 'auto'` 两个分支返回相同值，简化为 `'auto'`。
+5. **清理未使用依赖**：`class-transformer`、`class-validator`、`p-limit` 在 `package.json` 中声明但代码从未 import。
+6. **同步 `REASON_LABEL`**：`export.service.ts` 与 `ResultCard.tsx` 的标签文案不一致（如 `soft_404_text` 一个是"软 404（文本）"，一个是"疑似软404(文本识别)"），统一为前端文案。
+7. **清理 `.env.example`**：移除 `BROWSER_POOL_*` 系列环境变量（无代码读取）。
+8. **简化 `HealthController`**：移除 `BrowserPoolService` 和 `MetricsService` 依赖，保留数据库/Redis/队列健康检查。
+
+涉及文件：
+- `apps/api/src/probe/browser-pool.service.ts`（删除）
+- `apps/api/src/monitoring/metrics.service.ts`（删除）
+- `apps/api/src/probe/probe.module.ts`（移除 BrowserPoolService）
+- `apps/api/src/monitoring/monitoring.module.ts`（移除 MetricsService）
+- `apps/api/src/monitoring/health.controller.ts`（简化）
+- `apps/api/src/monitoring/__tests__/health.controller.spec.ts`（同步更新）
+- `apps/api/src/probe/smart-wait.service.ts`（条件顺序修复）
+- `apps/api/src/ai/ai.service.ts`（冗余代码修复）
+- `apps/api/src/export/export.service.ts`（REASON_LABEL 同步）
+- `apps/api/package.json`（移除未使用依赖）
+- `.env.example`（移除未使用变量）

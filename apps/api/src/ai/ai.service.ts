@@ -198,7 +198,7 @@ export class AiService {
           model: modelName,
           messages,
           tools: [FETCH_URL_TOOL, FETCH_RENDERED_TOOL],
-          tool_choice: round === 0 ? 'auto' : 'auto',
+          tool_choice: 'auto',
           temperature: 0.1,
           max_tokens: 1000,
         })

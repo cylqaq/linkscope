@@ -326,7 +326,6 @@ Prisma + Postgres。Schema 位于 `apps/api/prisma/schema.prisma`：
 ### 实现组件
 
 - **AntiDetectionService**：反爬虫服务，提供指纹随机化、行为模拟、请求头随机化
-- **BrowserPoolService**：浏览器实例池，复用浏览器实例，降低内存消耗
 - **SmartWaitService**：智能等待服务，根据页面特征动态调整等待时间
 
 ---
@@ -443,9 +442,7 @@ Prisma + Postgres。Schema 位于 `apps/api/prisma/schema.prisma`：
 
 ### 实现组件
 
-- **MetricsService**：指标收集服务，提供 Prometheus 格式指标
-- **HealthController**：健康检查控制器，提供 /health、/ready、/live 端点
-- **BrowserPoolService**：浏览器实例池，提供池状态指标
+- **HealthController**：健康检查控制器，提供 /health、/ready、/live 端点（数据库、Redis、队列健康检查）
 
 ### 安全规范
 

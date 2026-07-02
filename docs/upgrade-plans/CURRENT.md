@@ -4,11 +4,11 @@
 >
 > 模板见文末「下轮占位」。
 
-## 上轮摘要（2026-07-02 · Round 15 · 内容下架检测逻辑加固）
+## 上轮摘要（2026-07-02 · Round 16 · 功能孤岛清理 + 逻辑 Bug 修复）
 
-- **问题**：核心检测目标是「内容是否被平台下架」而非「链接是否可访问」，但多处逻辑将 HTTP 200 但内容已下架的链接误判为可访问。具体：`DEAD_TEXT_PATTERNS` 不完整、网络拒连场景未检查死链内容、平台下架匹配用错 `internalStatus`、`regionPatterns` 从未被检查、`isFalsePositiveHttp404`/`browserLooksHealthy` 未检查账号封禁和地区限制。
-- **措施**：✅ 扩展 `DEAD_TEXT_PATTERNS` 补充 20+ 条模式（D-041）；✅ 网络拒连场景增加 `browserShowsDeadContent` 检查；✅ 平台下架 `internalStatus` 从 `soft_404` 改为 `removed`；✅ 补全 `regionPatterns` 规则引擎检查；✅ `isFalsePositiveHttp404`/`browserLooksHealthy` 加固；✅ 前端 REASON_LABEL 同步。
-- **决策**：`DECISIONS.md` **D-041**。
+- **问题**：全局审查发现多处功能孤岛（注册但从未使用的模块）、逻辑 Bug 和代码不一致问题。BrowserPoolService（289 行）和 MetricsService（220 行）从未被实际调用；SmartWaitService 条件顺序错误导致高负载等待逻辑失效；AiService 冗余代码；export.service.ts 与 ResultCard.tsx 的 REASON_LABEL 不一致。
+- **措施**：✅ 删除 BrowserPoolService 和 MetricsService；✅ 修复 SmartWaitService 条件顺序 bug；✅ 修复 AiService 冗余 tool_choice；✅ 清理未使用依赖（class-transformer, class-validator, p-limit）；✅ 同步 REASON_LABEL；✅ 清理 .env.example 未使用变量；✅ 简化 HealthController。
+- **决策**：`DECISIONS.md` **D-042**。
 
 ---
 
@@ -16,5 +16,5 @@
 
 ### 验收标准
 1. ⏳ 测试覆盖率达到目标（单元测试≥80%，集成测试≥70%，端到端测试≥60%）
-2. ⏳ 性能优化：Redis缓存命中率≥80%
-3. ⏳ 监控系统告警规则正常工作，可视化面板可用
+2. ⏳ 性能优化：探测延迟、并发能力
+3. ⏳ MCP Server 集成完善（当前 determineStatus 与 ClassifyService 逻辑重复）

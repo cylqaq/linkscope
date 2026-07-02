@@ -65,10 +65,10 @@ export class SmartWaitService {
     }
 
     // 2. 基于网络请求数量调整
-    if (characteristics.networkRequestCount > 10) {
-      waitTime = Math.max(waitTime, 6000) // 多请求页面增加等待
-    } else if (characteristics.networkRequestCount > 20) {
-      waitTime = Math.max(waitTime, 10000) // 大量请求页面增加等待
+    if (characteristics.networkRequestCount > 20) {
+      waitTime = Math.max(waitTime, 10000)
+    } else if (characteristics.networkRequestCount > 10) {
+      waitTime = Math.max(waitTime, 6000)
     }
 
     // 3. 基于DOM变化频率调整

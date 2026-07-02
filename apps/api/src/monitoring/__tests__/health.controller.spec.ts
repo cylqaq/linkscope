@@ -1,26 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing'
 import { HealthController } from '../health.controller'
-import { MetricsService } from '../metrics.service'
-import { BrowserPoolService } from '../../probe/browser-pool.service'
 import { PrismaService } from '../../prisma/prisma.service'
 import { getQueueToken } from '@nestjs/bull'
 
 describe('HealthController', () => {
   let controller: HealthController
   let prismaService: PrismaService
-  let browserPoolService: BrowserPoolService
 
   beforeEach(async () => {
     const mockPrismaService = {
       $queryRaw: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
-    }
-
-    const mockBrowserPoolService = {
-      getPoolStatus: jest.fn().mockReturnValue({
-        totalBrowsers: 1,
-        totalContexts: 0,
-        availableBrowsers: 1,
-      }),
     }
 
     const mockQueue = {
@@ -35,14 +24,9 @@ describe('HealthController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [HealthController],
       providers: [
-        MetricsService,
         {
           provide: PrismaService,
           useValue: mockPrismaService,
-        },
-        {
-          provide: BrowserPoolService,
-          useValue: mockBrowserPoolService,
         },
         {
           provide: getQueueToken('probe'),
@@ -53,7 +37,6 @@ describe('HealthController', () => {
 
     controller = module.get<HealthController>(HealthController)
     prismaService = module.get<PrismaService>(PrismaService)
-    browserPoolService = module.get<BrowserPoolService>(BrowserPoolService)
   })
 
   it('should be defined', () => {
@@ -67,7 +50,6 @@ describe('HealthController', () => {
       expect(result.status).toBe('healthy')
       expect(result.components.database.status).toBe('healthy')
       expect(result.components.redis.status).toBe('healthy')
-      expect(result.components.browserPool.status).toBe('healthy')
       expect(result.components.queue.status).toBe('healthy')
     })
 
