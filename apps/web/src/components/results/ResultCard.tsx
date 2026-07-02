@@ -36,6 +36,7 @@ const REASON_LABEL: Record<string, string> = {
   unreachable: '主机不可达',
   blocked_by_waf: 'WAF 拦截',
   redirect_to_home: '跳转到首页',
+  redirect_to_error: '跳转到错误页',
   platform_detected: '平台校验',
   unknown: '未知',
 }

@@ -8,6 +8,8 @@ import { ClassifyModule } from './classify/classify.module'
 import { AiModule } from './ai/ai.module'
 import { ExportModule } from './export/export.module'
 import { ScreenHintsModule } from './screen-hints/screen-hints.module'
+import { MonitoringModule } from './monitoring/monitoring.module'
+import { McpModule } from './mcp/mcp.module'
 
 @Module({
   imports: [
@@ -26,6 +28,8 @@ import { ScreenHintsModule } from './screen-hints/screen-hints.module'
     AiModule,
     ExportModule,
     ScreenHintsModule,
+    MonitoringModule,
+    McpModule,
   ],
 })
 export class AppModule {}

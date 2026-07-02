@@ -9,6 +9,8 @@ import {
   type NetworkSample,
 } from '@linkscope/shared'
 import { ScreenHintsService } from '../screen-hints/screen-hints.service'
+import { SmartWaitService, type SmartWaitOptions } from './smart-wait.service'
+import { AntiDetectionService } from './anti-detection.service'
 import { resolveScreenshotStorageDir } from '../screenshot-storage'
 import { createHash } from 'crypto'
 import * as path from 'path'
@@ -16,6 +18,14 @@ import * as fs from 'fs'
 
 const PAGE_TIMEOUT = 20000
 const WAIT_FOR = 3000
+
+// 智能等待配置
+const SMART_WAIT_OPTIONS: SmartWaitOptions = {
+  minWaitMs: parseInt(process.env.BROWSER_WAIT_MIN || '3000', 10),
+  maxWaitMs: parseInt(process.env.BROWSER_WAIT_MAX || '15000', 10),
+  defaultWaitMs: parseInt(process.env.BROWSER_WAIT_DEFAULT || '5000', 10),
+  enabled: process.env.BROWSER_SMART_WAIT !== 'false',
+}
 
 const MAX_NETWORK_SAMPLES = 40
 const MAX_NETWORK_BODY_READS = 12
@@ -51,21 +61,49 @@ export interface BrowserProbeOptions {
 
 // Common soft-404 / removed text patterns (Chinese + English)
 const DEAD_TEXT_PATTERNS = [
+  // 通用删除/不存在
   /该内容已被删除/,
+  /内容已删除/,
   /内容不存在/,
+  /内容不可用/,
+  /内容不可见/,
+  /内容已下[架线]/,
+  /该内容已下[架线]/,
   /页面不存在/,
+  /找不到页面/,
+  /您访问的页面不存在/,
   /404\s*(not found)?/i,
   /this page (doesn't|does not) exist/i,
   /content (has been|was) (deleted|removed)/i,
-  /video (has been|was) (deleted|removed)/i,
   /we couldn.t find (this|that) page/i,
   /抱歉[\s，,]*(此|该)?页面(不存在|已(被)?删除|暂时无法访问)/,
-  /找不到页面/,
-  /您访问的页面不存在/,
+  // 视频相关
+  /视频已删除/,
+  /视频不存在/,
+  /视频不见了/,
+  /视频去哪了/,
   /该视频已(被(作者)?)?删除/,
-  /该微博已删除/,
+  /该视频已下[架线]/,
+  /video (has been|was) (deleted|removed)/i,
+  // 文章/笔记相关
+  /文章不存在/,
+  /该文章已(被)?删除/,
+  /该文章已下线/,
   /笔记不存在/,
-  /该作品已被删除/,
+  /该笔记已(被)?删除/,
+  // 微博/博文
+  /微博不存在/,
+  /该微博已删除/,
+  /该博文已(被)?屏蔽/,
+  // 作品/稿件
+  /作品不存在/,
+  /该作品已(被)?删除/,
+  /稿件不可见/,
+  /稿件已失效/,
+  // 屏蔽/下架
+  /该内容已(被)?屏蔽/,
+  /此文已(被)?屏蔽/,
+  /该内容已(被)?下架/,
 ]
 
 @Injectable()
@@ -73,7 +111,11 @@ export class BrowserProbeService {
   private readonly logger = new Logger(BrowserProbeService.name)
   private playwright: any = null
 
-  constructor(private readonly screenHints: ScreenHintsService) {}
+  constructor(
+    private readonly screenHints: ScreenHintsService,
+    private readonly smartWait: SmartWaitService,
+    private readonly antiDetection: AntiDetectionService,
+  ) {}
 
   /**
    * 供 AI 在无截图模式下拉取渲染后文本，避免 axios 在抖音等站拿到的假 404/空壳。
@@ -89,31 +131,50 @@ export class BrowserProbeService {
 
     try {
       const pw = await this.getPlaywright()
+
+      // 获取随机化的请求头
+      const randomizedHeaders = this.antiDetection.getRandomizedHeaders()
+
+      // 获取随机代理
+      const proxy = this.antiDetection.getRandomProxy()
+
+      // 浏览器启动参数
+      const launchArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+      ]
+
+      // 如果有代理，添加代理参数
+      if (proxy) {
+        launchArgs.push(`--proxy-server=${proxy}`)
+      }
+
       browser = await pw.chromium.launch({
         headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-blink-features=AutomationControlled',
-        ],
+        args: launchArgs,
       })
+
+      // 获取随机化的指纹
+      const fingerprint = this.antiDetection.getRandomizedFingerprint()
 
       const context = await browser.newContext({
-        userAgent: DEFAULT_USER_AGENT,
-        locale: 'zh-CN',
-        viewport: { width: 1280, height: 800 },
-        extraHTTPHeaders: { 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' },
+        userAgent: randomizedHeaders['User-Agent'] || DEFAULT_USER_AGENT,
+        locale: fingerprint.language,
+        viewport: {
+          width: parseInt(fingerprint.screenResolution.split('x')[0]),
+          height: parseInt(fingerprint.screenResolution.split('x')[1]),
+        },
+        extraHTTPHeaders: {
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          ...randomizedHeaders,
+        },
       })
 
-      // Stealth patches
-      await context.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
-        ;(window as any).chrome = { runtime: {} }
-        Object.defineProperty(navigator, 'plugins', {
-          get: () => [{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' }],
-        })
-      })
+      // 生成随机化的 stealth 脚本
+      const stealthScript = this.antiDetection.generateStealthScript()
+      await context.addInitScript(stealthScript)
 
       page = await context.newPage()
       page.setDefaultTimeout(PAGE_TIMEOUT)
@@ -183,9 +244,23 @@ export class BrowserProbeService {
         await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {})
       }
 
+      // 智能等待策略
       let waitMs = WAIT_FOR
       if (isDouyinFlow) waitMs = 5500
       if (opts?.skipScreenshot) waitMs = Math.max(waitMs, 4500)
+
+      // 使用智能等待服务计算等待时间
+      if (SMART_WAIT_OPTIONS.enabled) {
+        try {
+          const characteristics = await this.smartWait.detectPageCharacteristics(page)
+          const smartWaitMs = this.smartWait.calculateWaitTime(characteristics, SMART_WAIT_OPTIONS)
+          waitMs = Math.max(waitMs, smartWaitMs)
+          this.logger.debug(`Smart wait applied: ${smartWaitMs}ms`, { url, characteristics })
+        } catch (error) {
+          this.logger.warn(`Smart wait failed, using default: ${error}`)
+        }
+      }
+
       await page.waitForTimeout(waitMs)
 
       const pageTitle = await page.title().catch(() => null)

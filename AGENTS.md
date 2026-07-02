@@ -60,7 +60,93 @@ packages/
 docs/
   ARCHITECTURE.md         长期：分层与契约
   DECISIONS.md            长期：累积原则（仅追加）
+  AI_DEVELOPMENT.md       AI 开发指南
+  MCP_INTEGRATION.md      MCP 集成指南
+  LOOP_ENGINEERING.md     Loop Engineering 指南
+  DOCUMENTATION_STANDARDS.md 文档规范与边界
   upgrade-plans/
     README.md             流程
     CURRENT.md            单窗口（上轮摘要 + 下轮占位）
+.cursor/
+  skills/                 动态技能（领域知识）
+  rules/                  静态规则
+  hooks.json              安全门禁
+  mcp.json                MCP 服务器配置
+scripts/
+  verify.sh               验证脚本
+  loop-state.json         循环状态
+```
+
+## 新增文档指南
+
+### AI 开发（`docs/AI_DEVELOPMENT.md`）
+- 模型集成：DeepSeek / OpenAI 切换
+- 提示词工程：版本管理、系统提示词结构
+- 工具调用：fetch_url / fetch_url_rendered
+- 结果融合：规则 + AI 加权策略
+
+### MCP 集成（`docs/MCP_INTEGRATION.md`）
+- 作为 MCP Server：暴露检测能力
+- 作为 MCP Client：接入外部工具
+- 传输协议：stdio / Streamable HTTP
+- 工具列表：detect_link_status / batch_detect
+
+### Loop Engineering（`docs/LOOP_ENGINEERING.md`）
+- 循环工程范式：从单次交互到自动迭代
+- 六大积木：Automations / Worktrees / Skills / Connectors / Sub-agents / State
+- 验证流程：verify.sh + 类型检查 + 测试
+- 状态管理：loop-state.json
+
+### 文档规范（`docs/DOCUMENTATION_STANDARDS.md`）
+- 文档分类：技术文档、决策记录、迭代计划
+- 更新规范：必须更新场景、更新流程、版本控制
+- 边界限制：禁止行为、必须遵循规范
+- 质量检查：检查清单、质量指标
+
+## 循环工程快速开始
+
+1. **配置 Skills**
+```bash
+mkdir -p .cursor/skills/linkscope-detection
+# 创建 SKILL.md（见 LOOP_ENGINEERING.md）
+```
+
+2. **配置 Hooks**
+```bash
+# 创建 .cursor/hooks.json（见 LOOP_ENGINEERING.md）
+```
+
+3. **创建验证脚本**
+```bash
+chmod +x scripts/verify.sh
+```
+
+4. **运行循环**
+```
+/loop 运行验证脚本，修复所有类型错误，直到所有测试通过
+```
+
+## MCP 集成快速开始
+
+1. **安装依赖**
+```bash
+pnpm add @modelcontextprotocol/sdk zod
+```
+
+2. **配置 MCP Server**
+```json
+// .cursor/mcp.json
+{
+  "mcpServers": {
+    "linkscope": {
+      "command": "node",
+      "args": ["dist/mcp/mcp-server.js"]
+    }
+  }
+}
+```
+
+3. **使用工具**
+```
+在 Cursor 中调用 detect_link_status 工具检测链接
 ```

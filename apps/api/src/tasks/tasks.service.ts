@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { Injectable, Logger, NotFoundException } from '@nestjs/common'
 import { InjectQueue } from '@nestjs/bull'
 import { Queue } from 'bull'
 import * as fs from 'fs'
@@ -6,21 +6,40 @@ import * as path from 'path'
 import { PrismaService } from '../prisma/prisma.service'
 import { resolveScreenshotStorageDir } from '../screenshot-storage'
 import { normalizeUrl, dedupeKey, extractUrlsFromText, isValidUrl, detectPlatform } from '@linkscope/shared'
+import { FileParserService, ParsedUrl, FileParseResult } from './file-parser.service'
+
+const BATCH_SIZE = 500 // 数据库批量插入大小
+const QUEUE_BATCH_SIZE = 100 // 队列批量添加大小
+
+export interface TaskCreationProgress {
+  phase: 'parsing' | 'inserting' | 'queuing' | 'completed'
+  total: number
+  processed: number
+  percentage: number
+  message: string
+}
 
 @Injectable()
 export class TasksService {
+  private readonly logger = new Logger(TasksService.name)
+
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue('probe') private readonly probeQueue: Queue,
+    private readonly fileParser: FileParserService,
   ) {}
 
+  /**
+   * 从文本创建任务（支持大文本）
+   */
   async createTask(urls: string[], name?: string) {
-    // Normalize & dedupe
-    const normalized: { original: string; normalized: string; domain: string; platform: string; dedupe: string }[] = []
+    // 规范化和去重
+    const normalized: ParsedUrl[] = []
     const seen = new Set<string>()
 
-    for (const raw of urls) {
-      const norm = normalizeUrl(raw.trim())
+    for (let i = 0; i < urls.length; i++) {
+      const raw = urls[i].trim()
+      const norm = normalizeUrl(raw)
       if (!norm || !isValidUrl(norm)) continue
       const dk = dedupeKey(norm)
       if (seen.has(dk)) continue
@@ -31,11 +50,12 @@ export class TasksService {
       const platformConfig = detectPlatform(norm)
 
       normalized.push({
-        original: raw.trim(),
+        original: raw,
         normalized: norm,
         domain,
         platform: platformConfig?.id ?? 'generic',
         dedupe: dk,
+        rowNumber: i + 1,
       })
     }
 
@@ -43,47 +63,187 @@ export class TasksService {
       throw new Error('No valid URLs found')
     }
 
+    return this.createTaskFromParsedUrls(normalized, name)
+  }
+
+  /**
+   * 从文本创建任务
+   */
+  async createTaskFromText(text: string, name?: string) {
+    const urls = extractUrlsFromText(text)
+    return this.createTask(urls, name)
+  }
+
+  /**
+   * 从文件创建任务（支持万级数据量）
+   */
+  async createTaskFromFile(
+    file: Express.Multer.File,
+    name?: string,
+    onProgress?: (progress: TaskCreationProgress) => void,
+  ) {
+    // 1. 解析文件
+    onProgress?.({
+      phase: 'parsing',
+      total: 0,
+      processed: 0,
+      percentage: 0,
+      message: '正在解析文件...',
+    })
+
+    const parseResult = await this.fileParser.parseFile(file, (progress) => {
+      onProgress?.({
+        phase: 'parsing',
+        total: progress.totalRows,
+        processed: progress.parsedRows,
+        percentage: Math.round((progress.parsedRows / progress.totalRows) * 100),
+        message: `正在解析: ${progress.parsedRows}/${progress.totalRows} 行`,
+      })
+    })
+
+    if (parseResult.urls.length === 0) {
+      throw new Error('文件中未找到有效URL')
+    }
+
+    // 2. 创建任务
+    onProgress?.({
+      phase: 'inserting',
+      total: parseResult.urls.length,
+      processed: 0,
+      percentage: 0,
+      message: `正在创建任务，共 ${parseResult.urls.length} 个URL...`,
+    })
+
+    const task = await this.createTaskFromParsedUrls(parseResult.urls, name, onProgress)
+
+    return {
+      task,
+      parseStats: parseResult.stats,
+    }
+  }
+
+  /**
+   * 从已解析的URL创建任务（批量插入优化）
+   */
+  private async createTaskFromParsedUrls(
+    urls: ParsedUrl[],
+    name?: string,
+    onProgress?: (progress: TaskCreationProgress) => void,
+  ) {
+    // 创建任务记录
     const task = await this.prisma.task.create({
       data: {
         name: name ?? `任务 ${new Date().toLocaleString('zh-CN')}`,
-        totalUrls: normalized.length,
+        totalUrls: urls.length,
         status: 'queued',
-        taskUrls: {
-          create: normalized.map(u => ({
-            originalUrl: u.original,
-            normalizedUrl: u.normalized,
-            domain: u.domain,
-            platform: u.platform,
-            dedupeKey: u.dedupe,
-          })),
-        },
       },
-      include: { taskUrls: { select: { id: true } } },
     })
 
-    // Enqueue all URLs for probing
-    const jobs = task.taskUrls.map(u => ({
-      name: 'probe-url',
-      data: { taskId: task.id, taskUrlId: u.id },
-    }))
+    // 分批插入TaskUrls
+    const totalBatches = Math.ceil(urls.length / BATCH_SIZE)
+    let insertedCount = 0
 
-    await this.probeQueue.addBulk(
-      jobs.map(j => ({
-        name: j.name,
-        data: j.data,
-        opts: { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: 100 },
+    for (let i = 0; i < urls.length; i += BATCH_SIZE) {
+      const batch = urls.slice(i, i + BATCH_SIZE)
+      const batchNumber = Math.floor(i / BATCH_SIZE) + 1
+
+      await this.prisma.taskUrl.createMany({
+        data: batch.map(u => ({
+          taskId: task.id,
+          originalUrl: u.original,
+          normalizedUrl: u.normalized,
+          domain: u.domain,
+          platform: u.platform,
+          dedupeKey: u.dedupe,
+        })),
+        skipDuplicates: true,
+      })
+
+      insertedCount += batch.length
+      onProgress?.({
+        phase: 'inserting',
+        total: urls.length,
+        processed: insertedCount,
+        percentage: Math.round((insertedCount / urls.length) * 100),
+        message: `正在插入数据库: ${insertedCount}/${urls.length} (${batchNumber}/${totalBatches}批)`,
+      })
+    }
+
+    // 获取所有TaskUrl的ID
+    const taskUrls = await this.prisma.taskUrl.findMany({
+      where: { taskId: task.id },
+      select: { id: true, domain: true },
+    })
+
+    // 分批添加到队列
+    onProgress?.({
+      phase: 'queuing',
+      total: taskUrls.length,
+      processed: 0,
+      percentage: 0,
+      message: `正在添加到检测队列...`,
+    })
+
+    let queuedCount = 0
+    for (let i = 0; i < taskUrls.length; i += QUEUE_BATCH_SIZE) {
+      const batch = taskUrls.slice(i, i + QUEUE_BATCH_SIZE)
+      const jobs = batch.map(u => ({
+        name: 'probe-url',
+        data: { taskId: task.id, taskUrlId: u.id },
+        opts: {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 2000 },
+          removeOnComplete: 100,
+          // 优先级：国内平台优先
+          priority: this.getDomainPriority(u.domain),
+        },
       }))
-    )
 
-    // Update status to running
-    await this.prisma.task.update({ where: { id: task.id }, data: { status: 'running' } })
+      await this.probeQueue.addBulk(jobs)
+      queuedCount += batch.length
+
+      onProgress?.({
+        phase: 'queuing',
+        total: taskUrls.length,
+        processed: queuedCount,
+        percentage: Math.round((queuedCount / taskUrls.length) * 100),
+        message: `正在添加到检测队列: ${queuedCount}/${taskUrls.length}`,
+      })
+    }
+
+    // 更新任务状态
+    await this.prisma.task.update({
+      where: { id: task.id },
+      data: { status: 'running' },
+    })
+
+    onProgress?.({
+      phase: 'completed',
+      total: urls.length,
+      processed: urls.length,
+      percentage: 100,
+      message: `任务创建完成，共 ${urls.length} 个URL`,
+    })
 
     return this.getTaskById(task.id)
   }
 
-  async createTaskFromText(text: string, name?: string) {
-    const urls = extractUrlsFromText(text)
-    return this.createTask(urls, name)
+  /**
+   * 获取域名优先级（国内平台优先）
+   */
+  private getDomainPriority(domain: string): number {
+    const highPriorityDomains = [
+      'douyin.com',
+      'kuaishou.com',
+      'xiaohongshu.com',
+      'bilibili.com',
+      'weibo.com',
+    ]
+
+    for (const d of highPriorityDomains) {
+      if (domain.includes(d)) return 1
+    }
+    return 5
   }
 
   async getTaskById(id: string) {
@@ -189,5 +349,35 @@ export class TasksService {
     if (!filePath.startsWith(dir + path.sep)) return null
     if (!fs.existsSync(filePath)) return null
     return filePath
+  }
+
+  /**
+   * 获取任务统计信息
+   */
+  async getTaskStats(taskId: string) {
+    const task = await this.getTaskById(taskId)
+    const domainStats = await this.prisma.taskUrl.groupBy({
+      by: ['platform'],
+      where: { taskId },
+      _count: { id: true },
+    })
+
+    const statusStats = await this.prisma.taskUrl.groupBy({
+      by: ['status'],
+      where: { taskId },
+      _count: { id: true },
+    })
+
+    return {
+      task,
+      byPlatform: domainStats.map(d => ({
+        platform: d.platform,
+        count: d._count.id,
+      })),
+      byStatus: statusStats.map(s => ({
+        status: s.status,
+        count: s._count.id,
+      })),
+    }
   }
 }

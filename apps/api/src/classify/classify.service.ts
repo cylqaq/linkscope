@@ -167,14 +167,20 @@ export class ClassifyService {
       return ruleDead(internal, `http_${code}` as ReasonCode, 0.98)
     }
 
-    // 3) 网络拒连：浏览器一并失败 → 高置信死链；浏览器成功打开 → 反爬误报
+    // 3) 网络拒连：浏览器一并失败 → 高置信死链；浏览器成功打开 → 看内容是否真可访问
     if (err && NETWORK_REFUSAL_ERROR_CODES.has(err)) {
       const browserAlsoRefused = !!browser?.errorCode && NETWORK_REFUSAL_ERROR_CODES.has(browser.errorCode)
       if (browserAlsoRefused) {
         return ruleDead('removed', NET_REASON_BY_ERR[err], 0.95)
       }
-      if (browser && !browser.errorCode && this.browserHasMeaningfulContent(browser)) {
-        return ruleAccessible('platform_detected', 0.85)
+      if (browser && !browser.errorCode) {
+        // 浏览器能打开页面 — 先检查内容是否为下架/删除/封禁
+        if (this.browserShowsDeadContent(browser, platform)) {
+          return ruleDead('removed', 'removed_pattern', 0.85)
+        }
+        if (this.browserHasMeaningfulContent(browser)) {
+          return ruleAccessible('platform_detected', 0.85)
+        }
       }
       // 浏览器未跑或不确定：候选死链，留给 AI 复核
       return {
@@ -223,7 +229,7 @@ export class ClassifyService {
       const text = (browser.pageText ?? '') + (browser.pageTitle ?? '')
 
       for (const pattern of platform.deadPatterns) {
-        if (pattern.test(text)) return ruleDead('soft_404', 'removed_pattern', 0.92)
+        if (pattern.test(text)) return ruleDead('removed', 'removed_pattern', 0.92)
       }
       for (const pattern of platform.loginPatterns) {
         if (pattern.test(text)) return ruleReview('login_required', 'auth_401', 0.85, 'need_login', true)
@@ -231,10 +237,13 @@ export class ClassifyService {
       for (const pattern of platform.privatePatterns) {
         if (pattern.test(text)) return ruleDead('removed', 'account_banned', 0.88)
       }
+      for (const pattern of platform.regionPatterns) {
+        if (pattern.test(text)) return ruleReview('forbidden', 'region_restricted', 0.8, 'no_retry', true)
+      }
     }
 
     if (browser && this.hasUserScreenHint(browser)) {
-      return ruleDead('soft_404', 'user_screen_hint', 0.94)
+      return ruleDead('removed', 'user_screen_hint', 0.94)
     }
 
     if (browser?.domSignals.some(s => s.signal === 'network_api_removed')) {
@@ -527,6 +536,25 @@ export class ClassifyService {
     return false
   }
 
+  /** 浏览器页面是否显示下架/删除/封禁等死链内容 */
+  private browserShowsDeadContent(
+    browser: BrowserProbeResult,
+    platform: ReturnType<typeof detectPlatform>,
+  ): boolean {
+    if (browser.domSignals.some(s =>
+      s.signal === 'dead_content_text' || s.signal === 'user_screen_hint' || s.signal === 'network_api_removed'
+    )) {
+      return true
+    }
+    if (platform) {
+      const text = (browser.pageText ?? '') + (browser.pageTitle ?? '')
+      for (const pattern of [...platform.deadPatterns, ...platform.privatePatterns, ...platform.regionPatterns]) {
+        if (pattern.test(text)) return true
+      }
+    }
+    return false
+  }
+
   private isFalsePositiveHttp404(
     http: HttpProbeResult,
     browser: BrowserProbeResult | null,
@@ -537,6 +565,12 @@ export class ClassifyService {
 
     const text = (browser.pageText ?? '') + (browser.pageTitle ?? '')
     for (const pattern of platform.deadPatterns) {
+      if (pattern.test(text)) return false
+    }
+    for (const pattern of platform.privatePatterns) {
+      if (pattern.test(text)) return false
+    }
+    for (const pattern of platform.regionPatterns) {
       if (pattern.test(text)) return false
     }
     if (browser.domSignals.some(s => s.signal === 'dead_content_text' || s.signal === 'user_screen_hint' || s.signal === 'network_api_removed')) {
@@ -569,6 +603,12 @@ export class ClassifyService {
     const text = (browser.pageText ?? '') + (browser.pageTitle ?? '')
     if (platform) {
       for (const pattern of platform.deadPatterns) {
+        if (pattern.test(text)) return false
+      }
+      for (const pattern of platform.privatePatterns) {
+        if (pattern.test(text)) return false
+      }
+      for (const pattern of platform.regionPatterns) {
         if (pattern.test(text)) return false
       }
     }

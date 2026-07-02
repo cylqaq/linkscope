@@ -1,1 +1,20 @@
-{"name":"@linkscope/shared","version":"0.1.0","main":"./dist/index.js","types":"./dist/index.d.ts","scripts":{"build":"tsc","dev":"tsc --watch"},"devDependencies":{"typescript":"^5.8.3"}}
+{
+  "name": "@linkscope/shared",
+  "version": "0.1.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "jest": "^30.4.2",
+    "ts-jest": "^29.4.11",
+    "@types/jest": "^30.0.0"
+  }
+}

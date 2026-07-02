@@ -4,23 +4,17 @@
 >
 > 模板见文末「下轮占位」。
 
-## 上轮摘要（2026-05-15 · Round 10 · 默认同源 /api 与开发 CORS 闭环）
+## 上轮摘要（2026-07-02 · Round 15 · 内容下架检测逻辑加固）
 
-- **问题**：浏览器用 `http://172.*` 等打开 Next 时，默认直连 `localhost:3001` 触发 **CORS**；API 未启动时 `Failed to fetch` 提示笼统。
-- **措施**：未配 `NEXT_PUBLIC_API_URL` 时 `fetch` 走 **`当前站点 + /api`**，由 `next.config.js` rewrite 到 Nest（`API_URL`，默认 `127.0.0.1:3001`）；截图 `<img>` 用 `getWebVisibleApiRoot()` 同源；`humanizeNetworkError` 明确「先起 API」；Nest **非 production** 对 RFC1918 Origin 放行 + `CORS_EXTRA_ORIGINS`；`.env.example` 与 `ARCHITECTURE` 说明。
-- **决策**：`DECISIONS.md` **D-020**。
+- **问题**：核心检测目标是「内容是否被平台下架」而非「链接是否可访问」，但多处逻辑将 HTTP 200 但内容已下架的链接误判为可访问。具体：`DEAD_TEXT_PATTERNS` 不完整、网络拒连场景未检查死链内容、平台下架匹配用错 `internalStatus`、`regionPatterns` 从未被检查、`isFalsePositiveHttp404`/`browserLooksHealthy` 未检查账号封禁和地区限制。
+- **措施**：✅ 扩展 `DEAD_TEXT_PATTERNS` 补充 20+ 条模式（D-041）；✅ 网络拒连场景增加 `browserShowsDeadContent` 检查；✅ 平台下架 `internalStatus` 从 `soft_404` 改为 `removed`；✅ 补全 `regionPatterns` 规则引擎检查；✅ `isFalsePositiveHttp404`/`browserLooksHealthy` 加固；✅ 前端 REASON_LABEL 同步。
+- **决策**：`DECISIONS.md` **D-041**。
 
 ---
 
-## 下轮占位（开始下一轮迭代前清空本节，写入新计划；合并后再次精简为「上轮摘要」并把要点追加进 DECISIONS.md）
+## 下轮占位
 
-```
-### 计划题目（YYYY-MM-DD · Round N · 简短主题）
-
-- 问题：
-- 目标：
-- 拟措施：
-- 风险/不做的事：
-```
-
-**建议下一轮（未排期）**：截图 **OCR 或 VLM**、D-019 回归样本与单测、`PLATFORM_NETWORK_DEAD_HINT_RULES` 补全、可选鉴权与多租户绑定 `screen_hints`。
+### 验收标准
+1. ⏳ 测试覆盖率达到目标（单元测试≥80%，集成测试≥70%，端到端测试≥60%）
+2. ⏳ 性能优化：Redis缓存命中率≥80%
+3. ⏳ 监控系统告警规则正常工作，可视化面板可用

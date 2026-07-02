@@ -1,9 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common'
 import axios, { AxiosError } from 'axios'
 import { detectPlatform, DEFAULT_USER_AGENT, type HttpProbeResult } from '@linkscope/shared'
-
-const TIMEOUT_MS = 15000
-const MAX_REDIRECTS = 10
+import { AntiDetectionService } from './anti-detection.service'
 
 /** 与 HttpProbeResult.errorCode 中网络层取值同名的常量集合 */
 export const NETWORK_REFUSAL_ERROR_CODES = new Set([
@@ -16,6 +14,8 @@ export const NETWORK_REFUSAL_ERROR_CODES = new Set([
 @Injectable()
 export class HttpProbeService {
   private readonly logger = new Logger(HttpProbeService.name)
+
+  constructor(private readonly antiDetection: AntiDetectionService) {}
 
   async probe(url: string): Promise<HttpProbeResult> {
     const start = Date.now()
@@ -48,18 +48,22 @@ export class HttpProbeService {
   ): Promise<HttpProbeResult> {
     const redirectChain: string[] = [url]
 
+    // 获取随机化的请求头
+    const randomizedHeaders = this.antiDetection.getRandomizedHeaders()
+
+    // 获取随机代理
+    const proxy = this.antiDetection.getRandomProxy()
+
     const response = await axios.request({
       method,
       url,
-      timeout: TIMEOUT_MS,
-      maxRedirects: MAX_REDIRECTS,
+      timeout: this.antiDetection.getRequestTimeoutMs(),
+      maxRedirects: this.antiDetection.getMaxRedirects(),
       validateStatus: () => true, // Don't throw on 4xx/5xx
-      headers: {
-        'User-Agent': DEFAULT_USER_AGENT,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-      },
+      headers: randomizedHeaders,
       onUploadProgress: undefined,
+      // 代理配置
+      ...(proxy ? { proxy: { host: proxy.split(':')[0], port: parseInt(proxy.split(':')[1]) } } : {}),
       // Capture redirects
       beforeRedirect: (opts: any, resp: any) => {
         if (resp.headers?.location) {

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "linkscope": {
+      "command": "node",
+      "args": ["dist/mcp/mcp-server.js"],
+      "env": {
+        "NODE_ENV": "production"
+      }
+    }
+  }
+}
