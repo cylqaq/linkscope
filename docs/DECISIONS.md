@@ -13,9 +13,9 @@
 当 L1 与「常识/最终结论」矛盾时，**以 L2 文本与 finalUrl 路径为主信号**：
 
 - 抖音 `/video/<id>`、B 站 `/video/BV<x>`、小红书 `/explore/<id>` 等命中即视作命中内容。
-- L2 拿到正文 ≥ 120 字也视作命中。
+- L2 拿到正文 ≥ 80 字（`browserHasMeaningfulContent`）或 ≥ 120 字（`isFalsePositiveHttp404`）也视作命中。
 
-实现锚点：`ClassifyService.isFalsePositiveHttp404`、`browserHasMeaningfulContent`、`browserLooksHealthy`。
+实现锚点：`ClassifyService.isFalsePositiveHttp404`（阈值 120）、`browserHasMeaningfulContent`（阈值 80）、`browserLooksHealthy`（阈值 100）。
 
 ## D-003 · 最终 URL 必须 canonical + 去追踪参数（Round 2）
 
@@ -502,3 +502,26 @@ MCP 服务器不再使用 TODO 占位，改为注入 NestJS 服务实现完整�
 - `apps/api/src/export/export.service.ts`（REASON_LABEL 同步）
 - `apps/api/package.json`（移除未使用依赖）
 - `.env.example`（移除未使用变量）
+
+## D-043 · 文档一致性修复 + 前端依赖清理（Round 16 续）
+
+全局审查（4 个并行分析 agent）发现文档与代码存在多处不一致，以及前端有未使用的依赖。
+
+修复内容：
+
+1. **D-002 阈值描述修正**：`browserHasMeaningfulContent` 实际阈值为 80（非 120），`isFalsePositiveHttp404` 阈值为 120，`browserLooksHealthy` 阈值为 100。文档统一更新。
+2. **ARCHITECTURE.md Prompt 版本修正**：从 `1.3.0` 更新为 `1.3.2`。
+3. **AI_DEVELOPMENT.md 功能标注**：缓存策略、并发控制、监控告警三节标注为「待实现」，避免误导。
+4. **MCP_INTEGRATION.md 配置示例修正**：移除过时的 `node dist/mcp/mcp-server.js` 独立启动配置，说明 MCP 通过 NestJS 集成启动。
+5. **STATUS_LABEL 同步**：`export.service.ts` 的 `STATUS_LABEL` 与前端 `ResultCard.tsx` 的 `STATUS_CONFIG` 文案统一。
+6. **前端未使用依赖清理**：移除 `clsx`、`lucide-react`、`swr`（代码中从未 import）。
+7. **.env.example 补充**：添加 `OPENAI_MODEL` 变量（`ai.service.ts` 会读取但 `.env.example` 中缺失）。
+
+涉及文件：
+- `docs/DECISIONS.md`（D-002 阈值修正 + D-043 新增）
+- `docs/ARCHITECTURE.md`（Prompt 版本）
+- `docs/AI_DEVELOPMENT.md`（功能标注）
+- `docs/MCP_INTEGRATION.md`（配置示例）
+- `apps/api/src/export/export.service.ts`（STATUS_LABEL）
+- `apps/web/package.json`（移除未使用依赖）
+- `.env.example`（OPENAI_MODEL）

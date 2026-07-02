@@ -81,22 +81,9 @@ export class McpModule {}
 
 ### 2.3 配置 Cursor 集成
 
-在 `.cursor/mcp.json` 中添加：
+> **注意**：MCP 服务器作为 NestJS 应用的一部分启动（通过 `McpModule` 注册到 `AppModule`），不支持独立运行。需要先启动 API 服务，然后通过 stdio 或 HTTP 传输连接。
 
-```json
-{
-  "mcpServers": {
-    "linkscope": {
-      "command": "node",
-      "args": ["dist/mcp/mcp-server.js"],
-      "env": {
-        "DATABASE_URL": "postgresql://...",
-        "REDIS_HOST": "localhost"
-      }
-    }
-  }
-}
-```
+启动 API 服务后，MCP 服务器会自动注册。当前仅支持 stdio 传输，Streamable HTTP 传输为未来扩展。
 
 ### 2.4 暴露的工具列表
 

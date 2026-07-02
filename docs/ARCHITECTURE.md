@@ -89,7 +89,7 @@ classify():
 
 ## AI 层 · AiService
 
-文件：`apps/api/src/ai/ai.service.ts` · Prompt 版本 `1.3.0`
+文件：`apps/api/src/ai/ai.service.ts` · Prompt 版本 `1.3.2`
 
 - 双工具：
   - `fetch_url`（axios）：快、易被反爬。

@@ -2,9 +2,9 @@ import { Injectable } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 
 const STATUS_LABEL: Record<string, string> = {
-  accessible: '正常可访问',
-  dead_link: '失效链接',
-  review_required: '需复核',
+  accessible: '正常',
+  dead_link: '失效',
+  review_required: '复核',
 }
 
 const REASON_LABEL: Record<string, string> = {
