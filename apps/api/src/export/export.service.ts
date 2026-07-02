@@ -2,34 +2,40 @@ import { Injectable } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 
 const STATUS_LABEL: Record<string, string> = {
-  accessible: '正常可访问',
-  dead_link: '失效链接',
-  review_required: '需复核',
+  accessible: '正常',
+  dead_link: '失效',
+  review_required: '复核',
 }
 
 const REASON_LABEL: Record<string, string> = {
   http_200_ok: 'HTTP 200 正常',
-  http_404: '页面不存在(404)',
-  http_410: '内容已永久删除(410)',
-  http_451: '因法律原因不可访问(451)',
+  http_404: '404 页面不存在',
+  http_410: '410 已永久删除',
+  http_451: '451 法律限制',
   auth_401: '需要登录',
-  auth_403: '无权限访问',
-  soft_404_text: '疑似软404(文本识别)',
-  soft_404_ai: '疑似软404(AI识别)',
-  removed_pattern: '平台下架特征匹配',
+  auth_403: '无权限',
+  soft_404_text: '软 404（文本）',
+  soft_404_ai: '软 404（AI）',
+  user_screen_hint: '自定义屏幕提示（下架/失效）',
+  network_json_removed: '接口节选（下架/删除）',
+  removed_pattern: '平台下架',
   video_removed: '视频已删除',
   account_private: '账号私密',
-  account_banned: '账号被封禁',
+  account_banned: '账号封禁',
   region_restricted: '地区限制',
-  content_deleted: '内容已删除',
+  content_deleted: '内容删除',
   timeout: '连接超时',
-  dns_failed: 'DNS解析失败',
-  ssl_error: 'SSL证书错误',
-  blocked_by_waf: '被防火墙拦截',
-  redirect_to_home: '重定向到首页(疑似失效)',
-  redirect_to_error: '重定向到错误页',
-  platform_detected: '平台识别',
-  unknown: '未知原因',
+  dns_failed: 'DNS 解析失败',
+  ssl_error: 'SSL 错误',
+  connection_refused: '服务器拒绝连接',
+  connection_reset: '连接被重置',
+  connection_closed: '连接被关闭',
+  unreachable: '主机不可达',
+  blocked_by_waf: 'WAF 拦截',
+  redirect_to_home: '跳转到首页',
+  redirect_to_error: '跳转到错误页',
+  platform_detected: '平台校验',
+  unknown: '未知',
 }
 
 @Injectable()
@@ -50,7 +56,13 @@ export class ExportService {
       where: { taskId },
       include: {
         classification: {
-          select: { finalStatus: true, reasonCode: true, confidence: true, sourceOfTruth: true },
+          select: {
+            finalStatus: true,
+            reasonCode: true,
+            confidence: true,
+            sourceOfTruth: true,
+            evidence: true,
+          },
         },
         httpProbe: { select: { statusCode: true, finalUrl: true, latencyMs: true } },
       },
@@ -58,9 +70,29 @@ export class ExportService {
     })
   }
 
+  private displayFinalUrl(r: any): string {
+    const ev = r.classification?.evidence
+    if (ev && typeof ev === 'object' && typeof ev.finalUrl === 'string' && ev.finalUrl.length > 0) {
+      return ev.finalUrl
+    }
+    return r.httpProbe?.finalUrl ?? '-'
+  }
+
+  private displayVerifiedBy(r: any): string {
+    const ev = r.classification?.evidence
+    const v = ev && typeof ev === 'object' ? ev.verifiedBy : null
+    const map: Record<string, string> = {
+      http: '直连校验',
+      browser: '浏览器渲染校验',
+      ai: 'AI 复核',
+      rule: '规则判定',
+    }
+    return v ? map[v] ?? v : '-'
+  }
+
   private toCsv(rows: any[], taskId: string) {
     const headers = [
-      '序号', '原始URL', '结果', '原因', '置信度', 'HTTP状态码', '最终URL', '响应时间(ms)', '判定来源',
+      '序号', '原始URL', '结果', '原因', '置信度', 'HTTP状态码', '最终URL', '校验方式', '响应时间(ms)', '判定来源',
     ]
     const lines = [headers.join(',')]
 
@@ -70,12 +102,13 @@ export class ExportService {
       const h = r.httpProbe
       const cells = [
         i + 1,
-        '"' + r.originalUrl + '"',
+        '"' + r.originalUrl.replace(/"/g, '""') + '"',
         STATUS_LABEL[c?.finalStatus] ?? c?.finalStatus ?? '-',
         REASON_LABEL[c?.reasonCode] ?? c?.reasonCode ?? '-',
         c ? Math.round(c.confidence * 100) + '%' : '-',
         h?.statusCode ?? '-',
-        '"' + (h?.finalUrl ?? '-') + '"',
+        '"' + this.displayFinalUrl(r).replace(/"/g, '""') + '"',
+        this.displayVerifiedBy(r),
         h?.latencyMs ?? '-',
         c?.sourceOfTruth ?? '-',
       ]
@@ -101,6 +134,7 @@ export class ExportService {
       { header: '置信度', key: 'confidence', width: 8 },
       { header: 'HTTP状态码', key: 'statusCode', width: 12 },
       { header: '最终URL', key: 'finalUrl', width: 50 },
+      { header: '校验方式', key: 'verifiedBy', width: 18 },
       { header: '响应时间(ms)', key: 'latency', width: 14 },
       { header: '判定来源', key: 'source', width: 14 },
     ]
@@ -119,7 +153,8 @@ export class ExportService {
         reason: REASON_LABEL[c?.reasonCode] ?? c?.reasonCode ?? '-',
         confidence: c ? Math.round(c.confidence * 100) + '%' : '-',
         statusCode: h?.statusCode ?? '-',
-        finalUrl: h?.finalUrl ?? '-',
+        finalUrl: this.displayFinalUrl(r),
+        verifiedBy: this.displayVerifiedBy(r),
         latency: h?.latencyMs ?? '-',
         source: c?.sourceOfTruth ?? '-',
       })

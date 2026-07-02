@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "beforeAgentStart": [
+      {
+        "name": "read-documentation",
+        "script": "scripts/before-start.sh",
+        "description": "读取项目文档，确保理解上下文"
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "name": "typecheck",
+        "script": "scripts/typecheck.sh",
+        "description": "编辑后自动类型检查"
+      }
+    ],
+    "beforeCommit": [
+      {
+        "name": "verify",
+        "script": "scripts/verify.sh",
+        "description": "提交前验证"
+      }
+    ]
+  }
+}

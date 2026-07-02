@@ -117,7 +117,10 @@ export default function HomePage() {
           <span className="font-semibold text-white">LinkScope</span>
           <span className="text-xs text-[#64748b] bg-[#1a1d27] px-2 py-0.5 rounded-full">链接有效性检测</span>
         </div>
-        <a href="/history" className="text-sm text-[#64748b] hover:text-white transition-colors">历史任务</a>
+        <div className="flex items-center gap-4">
+          <a href="/history" className="text-sm text-[#64748b] hover:text-white transition-colors">历史任务</a>
+          <a href="/hints" className="text-sm text-[#64748b] hover:text-white transition-colors">屏幕提示</a>
+        </div>
       </header>
 
       {/* Messages */}

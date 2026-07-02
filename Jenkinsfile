@@ -120,14 +120,18 @@ pipeline {
                 }
             }
             steps {
-                sh '''
-                    set -euxo pipefail
-                    npm install -g pnpm
-                    pnpm install --frozen-lockfile
-                    pnpm --filter @linkscope/shared build
-                    pnpm --filter @linkscope/api typecheck
-                    pnpm --filter @linkscope/web typecheck
-                '''
+                script {
+                    docker.image('node:22-alpine').inside('-v /root/.npm:/root/.npm') {
+                        sh '''
+                            set -euxo pipefail
+                            npm install -g pnpm
+                            pnpm install --frozen-lockfile
+                            pnpm --filter @linkscope/shared build
+                            pnpm --filter @linkscope/api typecheck
+                            pnpm --filter @linkscope/web typecheck
+                        '''
+                    }
+                }
             }
         }
 

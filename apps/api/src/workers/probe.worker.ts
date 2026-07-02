@@ -6,6 +6,7 @@ import { HttpProbeService } from '../probe/http-probe.service'
 import { BrowserProbeService } from '../probe/browser-probe.service'
 import { ClassifyService } from '../classify/classify.service'
 import { TasksService } from '../tasks/tasks.service'
+import { RateLimiterService } from '../probe/rate-limiter.service'
 
 interface ProbeJobData {
   taskId: string
@@ -22,11 +23,13 @@ export class ProbeWorker {
     private readonly browserProbe: BrowserProbeService,
     private readonly classify: ClassifyService,
     private readonly tasksService: TasksService,
+    private readonly rateLimiter: RateLimiterService,
   ) {}
 
   @Process({ name: 'probe-url', concurrency: 10 })
   async handleProbe(job: Job<ProbeJobData>) {
     const { taskId, taskUrlId } = job.data
+    let release: (() => void) | null = null
 
     try {
       // Mark as probing
@@ -36,7 +39,11 @@ export class ProbeWorker {
       })
 
       const url = taskUrl.normalizedUrl
-      this.logger.debug(`Probing: ${url}`)
+      const domain = taskUrl.domain
+
+      // 获取域名级别的限速许可
+      release = await this.rateLimiter.acquire(domain)
+      this.logger.debug(`Probing: ${url} (domain: ${domain})`)
 
       // L1: HTTP probe
       const httpResult = await this.httpProbe.probe(url)
@@ -63,9 +70,9 @@ export class ProbeWorker {
 
       // L2: Browser probe (if needed)
       let browserResult = null
-      if (this.httpProbe.shouldTriggerBrowserFallback(httpResult)) {
+      if (this.httpProbe.shouldTriggerBrowserFallback(url, httpResult)) {
         try {
-          browserResult = await this.browserProbe.probe(url, taskUrlId)
+          browserResult = await this.browserProbe.probe(url, taskUrlId, { platform: taskUrl.platform })
 
           await this.prisma.browserProbe.upsert({
             where: { taskUrlId },
@@ -76,6 +83,7 @@ export class ProbeWorker {
               finalUrl: browserResult.finalUrl,
               screenshotPath: browserResult.screenshotPath,
               domSignals: browserResult.domSignals as any,
+              networkSamples: browserResult.networkSamples as any,
               errorCode: browserResult.errorCode,
             },
             update: {
@@ -84,6 +92,7 @@ export class ProbeWorker {
               finalUrl: browserResult.finalUrl,
               screenshotPath: browserResult.screenshotPath,
               domSignals: browserResult.domSignals as any,
+              networkSamples: browserResult.networkSamples as any,
             },
           })
         } catch (browserErr) {
@@ -139,6 +148,11 @@ export class ProbeWorker {
 
       await this.tasksService.incrementCompleted(taskId, 'review_required').catch(() => {})
       throw err
+    } finally {
+      // 释放限速许可
+      if (release) {
+        release()
+      }
     }
   }
 }

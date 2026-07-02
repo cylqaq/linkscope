@@ -76,6 +76,7 @@ model BrowserProbe {
   finalUrl       String?
   screenshotPath String?
   domSignals     Json     @default("[]")
+  networkSamples Json     @default("[]")
   errorCode      String?
   probeAt        DateTime @default(now())
 
@@ -115,4 +116,20 @@ model AiJudgement {
   judgedAt      DateTime @default(now())
 
   @@map("ai_judgements")
+}
+
+/// 用户维护的「页面可见下架/失效提示」子串；L2 在正文/标题中命中后写入 domSignals，L3 判因 `user_screen_hint`
+model ScreenHint {
+  id            String   @id @default(cuid())
+  platform      String
+  phrase        String
+  note          String?
+  enabled       Boolean  @default(true)
+  caseSensitive Boolean  @default(false)
+  hitCount      Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([platform, enabled])
+  @@map("screen_hints")
 }
