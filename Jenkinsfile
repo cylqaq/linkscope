@@ -120,18 +120,20 @@ pipeline {
                 }
             }
             steps {
-                script {
-                    docker.image('node:22-alpine').inside('-v /root/.npm:/root/.npm') {
-                        sh '''
-                            set -euxo pipefail
-                            npm install -g pnpm
-                            pnpm install --frozen-lockfile
-                            pnpm --filter @linkscope/shared build
-                            pnpm --filter @linkscope/api typecheck
-                            pnpm --filter @linkscope/web typecheck
-                        '''
-                    }
-                }
+                sh '''
+                    set -euxo pipefail
+                    docker run --rm \
+                      -v "${WORKSPACE}:/app" \
+                      -w /app \
+                      -e NODE_OPTIONS="--max-old-space-size=4096" \
+                      node:22-alpine sh -c "
+                        npm install -g pnpm &&
+                        pnpm install --frozen-lockfile &&
+                        pnpm --filter @linkscope/shared build &&
+                        pnpm --filter @linkscope/api typecheck &&
+                        pnpm --filter @linkscope/web typecheck
+                      "
+                '''
             }
         }
 
